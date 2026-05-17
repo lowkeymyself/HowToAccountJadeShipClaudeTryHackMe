@@ -365,7 +365,7 @@ Toggles.SpawnerToggle:OnChanged(function()
 end)
 
 -- keybind (change hideKey to whatever you want)
-local hideKey = Enum.KeyCode.RightShift
+local hideKey = Enum.KeyCode.Delete
 
 UIS.InputBegan:Connect(function(inp, gp)
     if gp then return end
