@@ -65,6 +65,70 @@ Left:AddButton({
 
 Left:AddDivider()
 
+Left:AddToggle('AntiAdmin', {
+    Text = 'Anti-Admin',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local TS       = game:GetService("TeleportService")
+            local Players  = game:GetService("Players")
+            local adminIDs = {781611480, 3455747658, 609001673, 2682265042}
+
+            local warnSfx = Instance.new("Sound")
+            warnSfx.SoundId = "rbxassetid://138956818415312"
+            warnSfx.Volume = 2
+            warnSfx.Parent = gui
+
+            _G.AntiAdminConn = Players.PlayerAdded:Connect(function(p)
+                if not Toggles.AntiAdmin.Value then return end
+                for _, id in ipairs(adminIDs) do
+                    if p.UserId == id then
+                        showToast("Admin detected: " .. p.Name .. " — hopping")
+                        warnSfx:Play()
+                        task.wait(2)
+                        TS:Teleport(game.PlaceId)
+                        return
+                    end
+                end
+            end)
+        else
+            if _G.AntiAdminConn then
+                _G.AntiAdminConn:Disconnect()
+                _G.AntiAdminConn = nil
+            end
+        end
+    end
+})
+
+Left:AddToggle('Fullbright', {
+    Text = 'Fullbright',
+    Default = false,
+    Callback = function(val)
+        local L = game:GetService('Lighting')
+        if val then
+            _G.FBCache = {
+                Ambient        = L.Ambient,
+                OutdoorAmbient = L.OutdoorAmbient,
+                Brightness     = L.Brightness,
+                ClockTime      = L.ClockTime,
+            }
+            L.Ambient        = Color3.fromRGB(255, 255, 255)
+            L.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+            L.Brightness     = 2
+            L.ClockTime      = 12
+        else
+            if _G.FBCache then
+                L.Ambient        = _G.FBCache.Ambient
+                L.OutdoorAmbient = _G.FBCache.OutdoorAmbient
+                L.Brightness     = _G.FBCache.Brightness
+                L.ClockTime      = _G.FBCache.ClockTime
+            end
+        end
+    end
+})
+
+Left:AddDivider()
+
 Right:AddButton({
     Text = 'Get All Bikes',
     Func = function()
@@ -100,6 +164,70 @@ Right:AddButton({
         end
         playSuccess()
         showToast('Sold all ' .. count .. ' bikes.')
+    end
+})
+
+Right:AddDivider()
+
+Right:AddInput('SpeedInput', {
+    Default = '60',
+    Numeric = true,
+    Finished = false,
+    Text = 'Max Speed (mph)',
+})
+
+Right:AddButton({
+    Text = 'Patch Bike',
+    Func = function()
+        local RS2  = game:GetService('RunService')
+        local char = plr.Character
+
+        local seat
+        for _, v in pairs(workspace:GetDescendants()) do
+            if v:IsA('VehicleSeat') and v.Occupant
+            and v.Occupant.Parent == char then
+                seat = v
+                break
+            end
+        end
+
+        if not seat then
+            showToast('Get in a bike first')
+            return
+        end
+
+        -- disconnect old patch if any
+        if _G.SpeedConn then
+            _G.SpeedConn:Disconnect()
+            _G.SpeedConn = nil
+        end
+
+        local root    = seat.Parent:FindFirstChildWhichIsA('BasePart')
+        local mph     = tonumber(Options.SpeedInput.Value) or 60
+        local maxSpeed = mph * 1.6 -- convert to studs/s
+
+        _G.SpeedConn = RS2.Heartbeat:Connect(function(dt)
+            if not UIS:IsKeyDown(Enum.KeyCode.W) then return end
+            if not root or not root.Parent then
+                _G.SpeedConn:Disconnect()
+                _G.SpeedConn = nil
+                return
+            end
+            local vel     = root.AssemblyLinearVelocity
+            local flatVel = Vector3.new(vel.X, 0, vel.Z)
+            if flatVel.Magnitude < maxSpeed then
+                local fwd     = root.CFrame.LookVector
+                local flatFwd = Vector3.new(fwd.X, 0, fwd.Z).Unit
+                root.AssemblyLinearVelocity = Vector3.new(
+                    vel.X + flatFwd.X * dt * 60,
+                    vel.Y,
+                    vel.Z + flatFwd.Z * dt * 60
+                )
+            end
+        end)
+
+        playSuccess()
+        showToast('Patched — max ' .. mph .. ' mph')
     end
 })
 
