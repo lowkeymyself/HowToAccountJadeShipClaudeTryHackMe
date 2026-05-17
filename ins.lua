@@ -9,8 +9,8 @@ gui.ResetOnSpawn = false
 gui.Parent = plr.PlayerGui
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 240, 0, 110)
-frame.Position = UDim2.new(0.5, -120, 0.5, -55)
+frame.Size = UDim2.new(0, 240, 0, 148)
+frame.Position = UDim2.new(0.5, -120, 0.5, -74)
 frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 frame.BorderSizePixel = 1
 frame.BorderColor3 = Color3.fromRGB(255, 255, 255)
@@ -53,9 +53,21 @@ subBtn.Font = Enum.Font.GothamBold
 subBtn.TextSize = 14
 subBtn.Parent = frame
 
+local allBtn = Instance.new("TextButton")
+allBtn.Size = UDim2.new(1, -16, 0, 32)
+allBtn.Position = UDim2.new(0, 8, 0, 84)
+allBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+allBtn.BorderSizePixel = 1
+allBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
+allBtn.Text = "GET ALL BIKES"
+allBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+allBtn.Font = Enum.Font.GothamBold
+allBtn.TextSize = 14
+allBtn.Parent = frame
+
 local hint = Instance.new("TextLabel")
 hint.Size = UDim2.new(1, 0, 0, 16)
-hint.Position = UDim2.new(0, 0, 0, 90)
+hint.Position = UDim2.new(0, 0, 0, 128)
 hint.BackgroundTransparency = 1
 hint.Text = "INSERT to close"
 hint.TextColor3 = Color3.fromRGB(100, 100, 100)
@@ -63,11 +75,9 @@ hint.Font = Enum.Font.Code
 hint.TextSize = 11
 hint.Parent = frame
 
-local function fireMoney(price)
-    local amount = tonumber(input.Text)
-    if not amount then return end
-    RS.Remotes.PurchaseBike:FireServer("EBOX V2", {
-        ["Name"] = "EBOX V2",
+local function fireBike(name, price)
+    RS.Remotes.PurchaseBike:FireServer(name, {
+        ["Name"] = name,
         ["Robux"] = false,
         ["Speed"] = 40,
         ["Kind"] = "E-BIKE",
@@ -77,11 +87,25 @@ local function fireMoney(price)
 end
 
 addBtn.MouseButton1Click:Connect(function()
-    fireMoney(-math.abs(tonumber(input.Text) or 0))
+    fireBike("EBOX V2", -math.abs(tonumber(input.Text) or 0))
 end)
 
 subBtn.MouseButton1Click:Connect(function()
-    fireMoney(math.abs(tonumber(input.Text) or 0))
+    fireBike("EBOX V2", math.abs(tonumber(input.Text) or 0))
+end)
+
+allBtn.MouseButton1Click:Connect(function()
+    allBtn.Text = "WORKING..."
+    allBtn.Active = false
+    local bikes = RS.Bikes:GetChildren()
+    for i, bike in ipairs(bikes) do
+        fireBike(bike.Name, 0)
+        task.wait(0.1)
+    end
+    allBtn.Text = "DONE (" .. #bikes .. ")"
+    task.wait(2)
+    allBtn.Text = "GET ALL BIKES"
+    allBtn.Active = true
 end)
 
 -- drag
