@@ -4,6 +4,12 @@ local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
 local plr = Players.LocalPlayer
 
+-- deduplication guard: if a previous instance is running, clean it up first
+if _G.SMCleanup then
+    pcall(_G.SMCleanup)
+    _G.SMCleanup = nil
+end
+
 local playSuccess -- defined after gui is created below
 local showToast   -- defined after gui is created below
 local minimapGui  -- defined after gui is created below
@@ -22,8 +28,9 @@ local Window = Library:CreateWindow({
 })
 
 local Tabs = {
-    Main = Window:AddTab('Main'),
-    Troll = Window:AddTab('Troll'),
+    Main     = Window:AddTab('Main'),
+    Troll    = Window:AddTab('Troll'),
+    Maps     = Window:AddTab('Maps'),
     Settings = Window:AddTab('Settings')
 }
 
@@ -139,6 +146,73 @@ Left:AddToggle('MinimapToggle', {
     end
 })
 
+Left:AddDivider()
+
+Left:AddToggle('StreamOptimizer', {
+    Text = 'Stream Optimizer',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local RS2 = game:GetService('RunService')
+
+            local char = plr.Character
+            local hrp  = char and char:FindFirstChild('HumanoidRootPart')
+
+            -- initial burst: fire at 8 directions * 4 distances (300..1200 studs)
+            -- causes one spike upfront, then nothing ever again
+            if hrp then
+                local origin = hrp.Position
+                local dirs = {
+                    Vector3.new(1,0,0), Vector3.new(-1,0,0),
+                    Vector3.new(0,0,1), Vector3.new(0,0,-1),
+                    Vector3.new(1,0,1).Unit,  Vector3.new(-1,0,1).Unit,
+                    Vector3.new(1,0,-1).Unit, Vector3.new(-1,0,-1).Unit,
+                }
+                task.spawn(function()
+                    pcall(function() workspace:RequestStreamAroundAsync(origin, 5) end)
+                end)
+                for _, dir in ipairs(dirs) do
+                    for _, dist in ipairs({300, 600, 900, 1200}) do
+                        local pos = origin + dir * dist
+                        task.spawn(function()
+                            pcall(function() workspace:RequestStreamAroundAsync(pos, 5) end)
+                        end)
+                    end
+                end
+            end
+
+            -- ongoing: every ~1s fire 800 studs ahead so newly entered areas
+            -- are still preloaded as you roam after the initial burst
+            local timer = 0
+            _G.OptimizerConn = RS2.Heartbeat:Connect(function()
+                timer += 1
+                if timer < 60 then return end
+                timer = 0
+
+                local c   = plr.Character
+                local hrp2 = c and c:FindFirstChild('HumanoidRootPart')
+                if not hrp2 then return end
+
+                local vel = hrp2.AssemblyLinearVelocity
+                local dir = vel.Magnitude > 1 and vel.Unit or hrp2.CFrame.LookVector
+                local lookAhead = hrp2.Position + dir * 800
+
+                task.spawn(function()
+                    pcall(function() workspace:RequestStreamAroundAsync(lookAhead, 3) end)
+                end)
+            end)
+
+            showToast('Stream Optimizer ON — preloading map...')
+        else
+            if _G.OptimizerConn then
+                _G.OptimizerConn:Disconnect()
+                _G.OptimizerConn = nil
+            end
+            showToast('Stream Optimizer OFF')
+        end
+    end
+})
+
 Right:AddButton({
     Text = 'Get All Bikes',
     Func = function()
@@ -226,7 +300,6 @@ Right:AddButton({
             return
         end
 
-        -- disconnect old patch if any
         if _G.SpeedConn then
             _G.SpeedConn:Disconnect()
             _G.SpeedConn = nil
@@ -278,8 +351,6 @@ local hitboxMap      = {}
 local clearHitboxes  = nil
 local refreshHitboxes = nil
 
-local noclipCache = {}
-
 local function getBikeRoot()
     local char = plr.Character
     if not char then return nil, nil end
@@ -298,119 +369,101 @@ local function cachedRoot(stored)
     return r
 end
 
-Right:AddToggle('BikeNoclip', {
-    Text = 'Bike Noclip',
-    Default = false,
-    Callback = function(val)
-        local bikeModel = getBikeRoot()
-        if not bikeModel then showToast('Get in a bike first') return end
-        if val then
-            -- find the largest non-seat part (main chassis) to keep collideable
-            local chassis = nil
-            local bestSz  = 0
-            for _, p in ipairs(bikeModel:GetDescendants()) do
-                if p:IsA('BasePart') and not p:IsA('VehicleSeat') then
-                    local sz = p.Size.Magnitude
-                    if sz > bestSz then bestSz = sz; chassis = p end
-                end
-            end
-            noclipCache = {}
-            for _, p in ipairs(bikeModel:GetDescendants()) do
-                if p:IsA('BasePart') then
-                    noclipCache[p] = p.CanCollide
-                    -- keep seat + chassis collideable so bike stays on the ground
-                    if not p:IsA('VehicleSeat') and p ~= chassis then
-                        p.CanCollide = false
-                    end
-                end
-            end
-            showToast('Noclip ON')
-        else
-            for p, original in pairs(noclipCache) do
-                if p and p.Parent then p.CanCollide = original end
-            end
-            noclipCache = {}
-            showToast('Noclip OFF')
-        end
-    end
-})
-
-Right:AddInput('HoverForce', {
-    Default = '1',
+Right:AddInput('GravityInput', {
+    Default = '196.2',
     Numeric = true,
     Finished = false,
-    Text = 'Hover Force  (1=float  2=rise  0.5=half-grav)',
+    Text = 'Gravity (default 196.2)',
 })
 
-Right:AddToggle('Levitate', {
-    Text = 'Levitate',
+Right:AddToggle('CustomGravity', {
+    Text = 'Custom Gravity',
     Default = false,
     Callback = function(val)
         if val then
-            local RS2  = game:GetService('RunService')
-            local root = nil
-            _G.LevitateConn = RS2.Heartbeat:Connect(function(dt)
-                root = cachedRoot(root)
-                if not root then return end
-                local force = tonumber(Options.HoverForce.Value) or 1
-                local vel   = root.AssemblyLinearVelocity
-                root.AssemblyLinearVelocity = Vector3.new(
-                    vel.X,
-                    vel.Y + workspace.Gravity * dt * force,
-                    vel.Z
-                )
-            end)
+            _G.OriginalGravity = workspace.Gravity  -- save game's actual default
+            local g = tonumber(Options.GravityInput.Value) or _G.OriginalGravity
+            workspace.Gravity = g
+            showToast('Gravity: ' .. g .. '  (was ' .. _G.OriginalGravity .. ')')
         else
-            if _G.LevitateConn then
-                _G.LevitateConn:Disconnect()
-                _G.LevitateConn = nil
-            end
+            workspace.Gravity = _G.OriginalGravity or 196.2
+            showToast('Gravity restored to ' .. workspace.Gravity)
         end
     end
 })
 
-Right:AddToggle('AnchorSelf', {
-    Text = 'Anchor Self',
-    Default = false,
-    Callback = function(val)
-        if val then
-            local RS2          = game:GetService('RunService')
-            local bikeModel, _ = getBikeRoot()
-            if not bikeModel then showToast('Get in a bike first') return end
-            -- snapshot every part's CFrame
-            local anchorData = {}
-            for _, p in ipairs(bikeModel:GetDescendants()) do
-                if p:IsA('BasePart') then anchorData[p] = p.CFrame end
-            end
-            _G.AnchorConn = RS2.Heartbeat:Connect(function()
-                for part, cf in pairs(anchorData) do
-                    if not part.Parent then
-                        anchorData[part] = nil
-                    else
-                        part.CFrame                 = cf
-                        part.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
-                        part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-                    end
-                end
-            end)
-            showToast('Anchored')
+Right:AddDivider()
+
+Right:AddInput('BrakeInput', {
+    Default = '120',
+    Numeric = true,
+    Finished = false,
+    Text = 'Brake Force (mph/s)',
+})
+
+Right:AddButton({
+    Text = 'Unpatch Brake',
+    Func = function()
+        if _G.BrakeConn then
+            _G.BrakeConn:Disconnect()
+            _G.BrakeConn = nil
+            showToast('Brake unpatched')
         else
-            if _G.AnchorConn then
-                _G.AnchorConn:Disconnect()
-                _G.AnchorConn = nil
-            end
-            -- zero all velocities on release so nothing flings
-            local bikeModel2, _ = getBikeRoot()
-            if bikeModel2 then
-                for _, p in ipairs(bikeModel2:GetDescendants()) do
-                    if p:IsA('BasePart') then
-                        p.AssemblyLinearVelocity  = Vector3.new(0, 0, 0)
-                        p.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-                    end
-                end
-            end
-            showToast('Anchor OFF')
+            showToast('Nothing to unpatch')
         end
+    end
+})
+
+Right:AddButton({
+    Text = 'Patch Brake',
+    Func = function()
+        local RS2  = game:GetService('RunService')
+        local char = plr.Character
+
+        local seat
+        for _, v in pairs(workspace:GetDescendants()) do
+            if v:IsA('VehicleSeat') and v.Occupant
+            and v.Occupant.Parent == char then
+                seat = v
+                break
+            end
+        end
+
+        if not seat then
+            showToast('Get in a bike first')
+            return
+        end
+
+        if _G.BrakeConn then
+            _G.BrakeConn:Disconnect()
+            _G.BrakeConn = nil
+        end
+
+        local root       = seat.Parent:FindFirstChildWhichIsA('BasePart')
+        local brakeMph   = tonumber(Options.BrakeInput.Value) or 120
+        local brakeDecel = brakeMph * 1.6  -- studs/s²
+
+        _G.BrakeConn = RS2.Heartbeat:Connect(function(dt)
+            if not UIS:IsKeyDown(Enum.KeyCode.S) then return end
+            if not root or not root.Parent then
+                _G.BrakeConn:Disconnect()
+                _G.BrakeConn = nil
+                return
+            end
+            local vel     = root.AssemblyLinearVelocity
+            local flatVel = Vector3.new(vel.X, 0, vel.Z)
+            local mag     = flatVel.Magnitude
+            if mag > 0.1 then
+                local reduction = math.min(mag, brakeDecel * dt)
+                local newFlat   = flatVel - flatVel.Unit * reduction
+                root.AssemblyLinearVelocity = Vector3.new(newFlat.X, vel.Y, newFlat.Z)
+            else
+                root.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
+            end
+        end)
+
+        playSuccess()
+        showToast('Brake patched — ' .. brakeMph .. ' mph/s')
     end
 })
 
@@ -462,6 +515,183 @@ SaveManager:SetLibrary(Library)
 SaveManager:SetFolder('BikeTool')
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
+
+-- ============================================================
+-- MAPS TAB
+-- ============================================================
+
+local loadedMaps = {}   -- { obj, name, x, z }
+local lastMapPos = nil  -- where to teleport after load
+
+-- fixed slots: same coords for everyone so friends loading the same map end up together
+-- spaced 12000 studs apart so even large maps never overlap; within safe Roblox float range
+local MAP_SLOTS = {
+    {x =  8000, z =  8000},  -- slot 1
+    {x = 20000, z =  8000},  -- slot 2
+    {x = 32000, z =  8000},  -- slot 3
+}
+
+local MapLeft  = Tabs.Maps:AddLeftGroupbox('Load')
+local MapRight = Tabs.Maps:AddRightGroupbox('Manage')
+
+MapLeft:AddInput('MapAssetId', {
+    Default  = '',
+    Numeric  = false,
+    Finished = false,
+    Text     = 'Asset ID  (or paste the full URL)',
+})
+
+MapLeft:AddButton({
+    Text = 'Load Map',
+    Func = function()
+        local raw = Options.MapAssetId.Value
+        if raw == '' then showToast('Enter an asset ID first') return end
+
+        local assetId = raw:match('%d+')
+        if not assetId then showToast('Could not read an ID from that') return end
+
+        local slot = #loadedMaps + 1
+        if slot > #MAP_SLOTS then
+            showToast('Max 3 maps loaded — clear one first')
+            return
+        end
+
+        showToast('Downloading map ' .. slot .. '  (' .. assetId .. ')...')
+        task.spawn(function()
+            local ok, objects = pcall(function()
+                return game:GetObjects('rbxassetid://' .. assetId)
+            end)
+            if not ok or not objects or #objects == 0 then
+                showToast('Load failed — check the ID')
+                return
+            end
+
+            local spawnX = MAP_SLOTS[slot].x
+            local spawnZ = MAP_SLOTS[slot].z
+
+            local loaded = 0
+            for _, obj in ipairs(objects) do
+                if obj:IsA('Model') or obj:IsA('BasePart') then
+                    pcall(function()
+                        if obj:IsA('Model') then
+                            local bbCF, bbSize = obj:GetBoundingBox()
+                            local bottomY   = bbCF.Position.Y - bbSize.Y / 2
+                            local pivotCF   = obj:GetPivot()
+                            local newPivotY = pivotCF.Position.Y + (2 - bottomY)
+                            obj:PivotTo(CFrame.new(spawnX, newPivotY, spawnZ))
+                        else
+                            obj.Position = Vector3.new(spawnX, obj.Size.Y / 2 + 2, spawnZ)
+                        end
+                    end)
+                    obj.Parent = workspace
+
+                    -- force every part to be anchored and collideable so the
+                    -- client-side bike physics actually land on the map
+                    for _, part in ipairs(obj:GetDescendants()) do
+                        if part:IsA('BasePart') then
+                            part.Anchored   = true
+                            part.CanCollide = true
+                        end
+                    end
+                    if obj:IsA('BasePart') then
+                        obj.Anchored   = true
+                        obj.CanCollide = true
+                    end
+
+                    local mapName = (obj.Name ~= '' and obj.Name) or ('Asset ' .. assetId)
+                    table.insert(loadedMaps, {obj = obj, name = mapName, x = spawnX, z = spawnZ})
+                    lastMapPos = Vector3.new(spawnX, 20, spawnZ)
+                    loaded += 1
+                end
+            end
+
+            if loaded > 0 then
+                showToast('Loaded: ' .. loadedMaps[#loadedMaps].name .. ' (#' .. #loadedMaps .. ')')
+            else
+                showToast('Model had no geometry to load')
+            end
+        end)
+    end
+})
+
+MapLeft:AddDivider()
+
+MapLeft:AddButton({
+    Text = 'Teleport to Last Map',
+    Func = function()
+        if not lastMapPos then showToast('No map loaded yet') return end
+        local char = plr.Character
+        local hrp  = char and char:FindFirstChild('HumanoidRootPart')
+        if not hrp then return end
+        hrp.CFrame = CFrame.new(lastMapPos)
+        showToast('Teleported')
+    end
+})
+
+MapRight:AddButton({
+    Text = 'Teleport to Map 1',
+    Func = function()
+        local entry = loadedMaps[1]
+        if not entry then showToast('No maps loaded') return end
+        local char = plr.Character
+        local hrp  = char and char:FindFirstChild('HumanoidRootPart')
+        if not hrp then return end
+        hrp.CFrame = CFrame.new(entry.x, 20, entry.z)
+        showToast('Teleported to ' .. entry.name)
+    end
+})
+
+MapRight:AddButton({
+    Text = 'Teleport to Map 2',
+    Func = function()
+        local entry = loadedMaps[2]
+        if not entry then showToast('Only ' .. #loadedMaps .. ' map(s) loaded') return end
+        local char = plr.Character
+        local hrp  = char and char:FindFirstChild('HumanoidRootPart')
+        if not hrp then return end
+        hrp.CFrame = CFrame.new(entry.x, 20, entry.z)
+        showToast('Teleported to ' .. entry.name)
+    end
+})
+
+MapRight:AddButton({
+    Text = 'Teleport to Map 3',
+    Func = function()
+        local entry = loadedMaps[3]
+        if not entry then showToast('Only ' .. #loadedMaps .. ' map(s) loaded') return end
+        local char = plr.Character
+        local hrp  = char and char:FindFirstChild('HumanoidRootPart')
+        if not hrp then return end
+        hrp.CFrame = CFrame.new(entry.x, 20, entry.z)
+        showToast('Teleported to ' .. entry.name)
+    end
+})
+
+MapRight:AddDivider()
+
+MapRight:AddButton({
+    Text = 'Remove Last Map',
+    Func = function()
+        if #loadedMaps == 0 then showToast('No maps to remove') return end
+        local entry = table.remove(loadedMaps)
+        pcall(function() entry.obj:Destroy() end)
+        lastMapPos = loadedMaps[#loadedMaps] and Vector3.new(loadedMaps[#loadedMaps].x, 20, loadedMaps[#loadedMaps].z) or nil
+        showToast('Removed: ' .. entry.name)
+    end
+})
+
+MapRight:AddButton({
+    Text = 'Clear All Maps',
+    Func = function()
+        for _, entry in ipairs(loadedMaps) do
+            pcall(function() entry.obj:Destroy() end)
+        end
+        loadedMaps = {}
+        lastMapPos = nil
+        showToast('All maps cleared')
+    end
+})
+
 
 -- ============================================================
 -- TROLL TAB
@@ -1529,3 +1759,45 @@ Toggles.MinimapToggle:OnChanged(function()
         task.spawn(runTerrainScan)
     end
 end)
+
+-- ============================================================
+-- CLEANUP (deduplication guard)
+-- called by the NEXT script load to cleanly tear down this instance
+-- ============================================================
+_G.SMCleanup = function()
+    -- stop any active fling loops
+    _G.FlingStop = true
+
+    -- disconnect all RunService connections
+    for _, key in ipairs({'SpeedConn', 'BrakeConn', 'HitboxConn',
+                          'AntiAdminConn', 'OptimizerConn'}) do
+        if _G[key] then
+            pcall(function() _G[key]:Disconnect() end)
+            _G[key] = nil
+        end
+    end
+
+    -- restore world gravity
+    pcall(function() workspace.Gravity = 196.2 end)
+
+    -- destroy all in-world waypoint beams
+    for _, wp in pairs(mapWPs) do
+        pcall(function() if wp.beamPart then wp.beamPart:Destroy() end end)
+        pcall(function() if wp.topPart  then wp.topPart:Destroy()  end end)
+    end
+
+    -- destroy all custom-loaded map models
+    for _, entry in ipairs(loadedMaps) do
+        pcall(function() entry.obj:Destroy() end)
+    end
+
+    -- clear hitbox selection boxes
+    pcall(clearHitboxes)
+
+    -- destroy ScreenGuis this script owns
+    pcall(function() gui:Destroy() end)
+    pcall(function() minimapGui:Destroy() end)
+
+    -- destroy LinoriaLib window
+    pcall(function() Library.ScreenGui:Destroy() end)
+end
