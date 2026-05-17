@@ -1,350 +1,377 @@
 local RS = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
-local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
 local plr = Players.LocalPlayer
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "MoneyGui"
+local playSuccess -- defined after gui is created below
+local showToast   -- defined after gui is created below
+
+local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
+local Window = Library:CreateWindow({
+    Title = 'SuperMoto Menu',
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2
+})
+
+local Tabs = {
+    Main = Window:AddTab('Main'),
+    Settings = Window:AddTab('Settings')
+}
+
+local Left = Tabs.Main:AddLeftGroupbox('Money')
+local Right = Tabs.Main:AddRightGroupbox('Bikes')
+
+Left:AddInput('Amount', {
+    Default = '10000',
+    Numeric = true,
+    Finished = false,
+    Text = 'Amount',
+})
+
+Left:AddDivider()
+
+Left:AddButton({
+    Text = 'Add Money',
+    Func = function()
+        local amount = math.abs(tonumber(Options.Amount.Value) or 0)
+        RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
+            ['Name'] = 'EBOX V2', ['Robux'] = false,
+            ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+            ['ProductID'] = 3585359520, ['Price'] = -amount
+        })
+        playSuccess()
+    end
+})
+
+Left:AddButton({
+    Text = 'Subtract Money',
+    Func = function()
+        local amount = math.abs(tonumber(Options.Amount.Value) or 0)
+        RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
+            ['Name'] = 'EBOX V2', ['Robux'] = false,
+            ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+            ['ProductID'] = 3585359520, ['Price'] = amount
+        })
+        playSuccess()
+    end
+})
+
+Left:AddDivider()
+
+Right:AddButton({
+    Text = 'Get All Bikes',
+    Func = function()
+        local bikes = RS.Bikes:GetChildren()
+        local count = 0
+        for _, bike in ipairs(bikes) do
+            if bike:IsA('Model') then
+                RS.Remotes.PurchaseBike:FireServer(bike.Name, {
+                    ['Name'] = bike.Name, ['Robux'] = false,
+                    ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+                    ['ProductID'] = 3585359520, ['Price'] = 0
+                })
+                count += 1
+                task.wait(0.1)
+            end
+        end
+        playSuccess()
+        showToast('Got all ' .. count .. ' bikes.')
+    end
+})
+
+Right:AddButton({
+    Text = 'Sell All Bikes',
+    Func = function()
+        local bikes = RS.Bikes:GetChildren()
+        local count = 0
+        for _, bike in ipairs(bikes) do
+            if bike:IsA('Model') then
+                RS.Remotes.SellBike:FireServer(bike.Name)
+                count += 1
+                task.wait(0.1)
+            end
+        end
+        playSuccess()
+        showToast('Sold all ' .. count .. ' bikes.')
+    end
+})
+
+Right:AddDivider()
+
+Right:AddToggle('SpawnerToggle', {
+    Text = 'Toggle Spawner',
+    Default = false,
+})
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:SetFolder('BikeTool')
+ThemeManager:ApplyToTab(Tabs.Settings)
+SaveManager:BuildConfigSection(Tabs.Settings)
+
+-- ============================================================
+-- custom spawner panel (linoria-matched, no rounding)
+-- ============================================================
+
+local BG     = Color3.fromRGB(25, 25, 25)
+local BG2    = Color3.fromRGB(20, 20, 20)
+local BGSUB  = Color3.fromRGB(30, 30, 30)
+local BORDER = Color3.fromRGB(50, 50, 50)
+local ACCENT = Color3.fromRGB(0, 120, 215)
+local TEXT   = Color3.fromRGB(240, 240, 240)
+local SUBTEXT= Color3.fromRGB(160, 160, 160)
+
+local gui = Instance.new('ScreenGui')
+gui.Name = 'SpawnerGui'
 gui.ResetOnSpawn = false
+gui.DisplayOrder = 999
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = plr.PlayerGui
 
--- toast
-local function showToast(text)
-    local toast = Instance.new("Frame")
-    toast.Size = UDim2.new(0, 240, 0, 32)
-    toast.Position = UDim2.new(0.5, -120, 1, -60)
-    toast.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    toast.BorderSizePixel = 1
-    toast.BorderColor3 = Color3.fromRGB(255, 255, 255)
-    toast.ZIndex = 20
-    toast.Parent = gui
-    local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text = text
-    lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-    lbl.Font = Enum.Font.GothamBold
-    lbl.TextSize = 13
-    lbl.ZIndex = 21
-    lbl.Parent = toast
-    TweenService:Create(toast, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
-        Position = UDim2.new(0.5, -120, 1, -80)
+local sfx = Instance.new('Sound')
+sfx.SoundId = 'rbxassetid://131039887376992'
+sfx.Volume = 2
+sfx.Parent = gui
+playSuccess = function() sfx:Play() end
+
+-- linoria-style toast: slides in from bottom-right, accent left bar
+local toastY = 0
+showToast = function(text)
+    toastY = toastY + 44
+    local offY = toastY
+
+    local t = Instance.new('Frame')
+    t.Size = UDim2.new(0, 280, 0, 48)
+    t.AnchorPoint = Vector2.new(1, 1)
+    t.Position = UDim2.new(1, 0, 1, -(offY - 44))
+    t.BackgroundColor3 = BG2
+    t.BorderSizePixel = 1
+    t.BorderColor3 = BORDER
+    t.ZIndex = 50
+    t.Parent = gui
+
+    -- accent left bar
+    local bar = Instance.new('Frame')
+    bar.Size = UDim2.new(0, 3, 1, 0)
+    bar.BackgroundColor3 = ACCENT
+    bar.BorderSizePixel = 0
+    bar.ZIndex = 51
+    bar.Parent = t
+
+    local l = Instance.new('TextLabel')
+    l.Size = UDim2.new(1, -10, 1, 0)
+    l.Position = UDim2.new(0, 8, 0, 0)
+    l.BackgroundTransparency = 1
+    l.Text = text
+    l.TextColor3 = TEXT
+    l.Font = Enum.Font.Gotham
+    l.TextSize = 14
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextTruncate = Enum.TextTruncate.AtEnd
+    l.ZIndex = 51
+    l.Parent = t
+
+    -- slide in from right
+    TweenService:Create(t, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+        Position = UDim2.new(1, -8, 1, -(offY - 44))
     }):Play()
-    task.delay(1.5, function()
-        TweenService:Create(toast, TweenInfo.new(0.3), {
-            Position = UDim2.new(0.5, -120, 1, -40),
-            BackgroundTransparency = 1
+
+    task.delay(2, function()
+        TweenService:Create(t, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+            Position = UDim2.new(1, 300, 1, -(offY - 44))
         }):Play()
-        TweenService:Create(lbl, TweenInfo.new(0.3), { TextTransparency = 1 }):Play()
-        task.wait(0.3)
-        toast:Destroy()
+        TweenService:Create(l, TweenInfo.new(0.2), { TextTransparency = 1 }):Play()
+        task.wait(0.2)
+        t:Destroy()
+        toastY = toastY - 44
     end)
 end
 
--- main frame
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 240, 0, 184)
-frame.Position = UDim2.new(0.5, -120, 0.5, -92)
-frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-frame.BorderSizePixel = 1
-frame.BorderColor3 = Color3.fromRGB(255, 255, 255)
-frame.Active = true
-frame.Parent = gui
-
-local input = Instance.new("TextBox")
-input.Size = UDim2.new(1, -16, 0, 28)
-input.Position = UDim2.new(0, 8, 0, 8)
-input.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-input.BorderSizePixel = 1
-input.BorderColor3 = Color3.fromRGB(255, 255, 255)
-input.Text = "10000"
-input.TextColor3 = Color3.fromRGB(255, 255, 255)
-input.Font = Enum.Font.Code
-input.TextSize = 16
-input.ClearTextOnFocus = false
-input.Parent = frame
-
-local addBtn = Instance.new("TextButton")
-addBtn.Size = UDim2.new(0.5, -12, 0, 32)
-addBtn.Position = UDim2.new(0, 8, 0, 44)
-addBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-addBtn.BorderSizePixel = 0
-addBtn.Text = "ADD"
-addBtn.TextColor3 = Color3.fromRGB(0, 0, 0)
-addBtn.Font = Enum.Font.GothamBold
-addBtn.TextSize = 14
-addBtn.Parent = frame
-
-local subBtn = Instance.new("TextButton")
-subBtn.Size = UDim2.new(0.5, -12, 0, 32)
-subBtn.Position = UDim2.new(0.5, 4, 0, 44)
-subBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-subBtn.BorderSizePixel = 1
-subBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
-subBtn.Text = "SUBTRACT"
-subBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-subBtn.Font = Enum.Font.GothamBold
-subBtn.TextSize = 14
-subBtn.Parent = frame
-
-local allBtn = Instance.new("TextButton")
-allBtn.Size = UDim2.new(0.5, -12, 0, 32)
-allBtn.Position = UDim2.new(0, 8, 0, 84)
-allBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-allBtn.BorderSizePixel = 1
-allBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
-allBtn.Text = "GET ALL"
-allBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-allBtn.Font = Enum.Font.GothamBold
-allBtn.TextSize = 14
-allBtn.Parent = frame
-
-local sellAllBtn = Instance.new("TextButton")
-sellAllBtn.Size = UDim2.new(0.5, -12, 0, 32)
-sellAllBtn.Position = UDim2.new(0.5, 4, 0, 84)
-sellAllBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-sellAllBtn.BorderSizePixel = 1
-sellAllBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
-sellAllBtn.Text = "SELL ALL"
-sellAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-sellAllBtn.Font = Enum.Font.GothamBold
-sellAllBtn.TextSize = 14
-sellAllBtn.Parent = frame
-
-local spawnerBtn = Instance.new("TextButton")
-spawnerBtn.Size = UDim2.new(1, -16, 0, 32)
-spawnerBtn.Position = UDim2.new(0, 8, 0, 124)
-spawnerBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-spawnerBtn.BorderSizePixel = 1
-spawnerBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
-spawnerBtn.Text = "TOGGLE SPAWNER"
-spawnerBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-spawnerBtn.Font = Enum.Font.GothamBold
-spawnerBtn.TextSize = 14
-spawnerBtn.Parent = frame
-
-local hint = Instance.new("TextLabel")
-hint.Size = UDim2.new(1, 0, 0, 16)
-hint.Position = UDim2.new(0, 0, 0, 164)
-hint.BackgroundTransparency = 1
-hint.Text = "INSERT to close"
-hint.TextColor3 = Color3.fromRGB(100, 100, 100)
-hint.Font = Enum.Font.Code
-hint.TextSize = 11
-hint.Parent = frame
-
--- spawner menu
-local spawnerOpen = false
-local spawnerFrame = Instance.new("Frame")
-spawnerFrame.Size = UDim2.new(0, 400, 0, 500)
-spawnerFrame.Position = UDim2.new(0.5, 10, 0.5, -250)
-spawnerFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+-- spawner window
+local spawnerFrame = Instance.new('Frame')
+spawnerFrame.Size = UDim2.new(0, 440, 0, 520)
+spawnerFrame.Position = UDim2.new(0.5, 20, 0.5, -260)
+spawnerFrame.BackgroundColor3 = BG2
 spawnerFrame.BorderSizePixel = 1
-spawnerFrame.BorderColor3 = Color3.fromRGB(255, 255, 255)
+spawnerFrame.BorderColor3 = BORDER
 spawnerFrame.Visible = false
-spawnerFrame.ZIndex = 5
+spawnerFrame.ZIndex = 10
 spawnerFrame.Active = true
 spawnerFrame.ClipsDescendants = true
 spawnerFrame.Parent = gui
 
-local spawnerTitle = Instance.new("TextLabel")
-spawnerTitle.Size = UDim2.new(1, 0, 0, 32)
-spawnerTitle.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-spawnerTitle.BorderSizePixel = 0
-spawnerTitle.Text = "BIKE SPAWNER"
-spawnerTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
-spawnerTitle.Font = Enum.Font.GothamBold
-spawnerTitle.TextSize = 13
-spawnerTitle.ZIndex = 6
-spawnerTitle.Parent = spawnerFrame
+-- title bar
+local titleBar = Instance.new('Frame')
+titleBar.Size = UDim2.new(1, 0, 0, 32)
+titleBar.BackgroundColor3 = BG2
+titleBar.BorderSizePixel = 0
+titleBar.ZIndex = 11
+titleBar.Parent = spawnerFrame
 
-local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.new(1, 0, 1, -32)
-scroll.Position = UDim2.new(0, 0, 0, 32)
+local accentLine = Instance.new('Frame')
+accentLine.Size = UDim2.new(1, 0, 0, 1)
+accentLine.Position = UDim2.new(0, 0, 0, 32)
+accentLine.BackgroundColor3 = ACCENT
+accentLine.BorderSizePixel = 0
+accentLine.ZIndex = 12
+accentLine.Parent = spawnerFrame
+
+local titleLbl = Instance.new('TextLabel')
+titleLbl.Size = UDim2.new(1, -16, 1, 0)
+titleLbl.Position = UDim2.new(0, 10, 0, 0)
+titleLbl.BackgroundTransparency = 1
+titleLbl.Text = 'Bike Spawner'
+titleLbl.TextColor3 = TEXT
+titleLbl.Font = Enum.Font.GothamSemibold
+titleLbl.TextSize = 13
+titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+titleLbl.ZIndex = 12
+titleLbl.Parent = titleBar
+
+local scroll = Instance.new('ScrollingFrame')
+scroll.Size = UDim2.new(1, -4, 1, -38)
+scroll.Position = UDim2.new(0, 2, 0, 36)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel = 0
-scroll.ScrollBarThickness = 4
-scroll.ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255)
-scroll.ZIndex = 6
+scroll.ScrollBarThickness = 2
+scroll.ScrollBarImageColor3 = ACCENT
+scroll.ZIndex = 11
 scroll.Parent = spawnerFrame
 
-local grid = Instance.new("UIGridLayout")
-grid.CellSize = UDim2.new(0, 120, 0, 140)
-grid.CellPadding = UDim2.new(0, 8, 0, 8)
+local grid = Instance.new('UIGridLayout')
+grid.CellSize = UDim2.new(0, 130, 0, 150)
+grid.CellPadding = UDim2.new(0, 4, 0, 4)
 grid.HorizontalAlignment = Enum.HorizontalAlignment.Center
 grid.Parent = scroll
 
-local padding = Instance.new("UIPadding")
-padding.PaddingTop = UDim.new(0, 8)
-padding.PaddingBottom = UDim.new(0, 8)
-padding.Parent = scroll
+local gridPad = Instance.new('UIPadding')
+gridPad.PaddingTop = UDim.new(0, 4)
+gridPad.PaddingBottom = UDim.new(0, 4)
+gridPad.Parent = scroll
 
--- populate bike cards
-local bikes = RS.Bikes:GetChildren()
-scroll.CanvasSize = UDim2.new(0, 0, 0, math.ceil(#bikes / 3) * 148 + 16)
+local bikeList = {}
+for _, v in ipairs(RS.Bikes:GetChildren()) do
+    if v:IsA('Model') then
+        table.insert(bikeList, v)
+    end
+end
+scroll.CanvasSize = UDim2.new(0, 0, 0, math.ceil(#bikeList / 3) * 154 + 8)
 
-for _, bike in ipairs(bikes) do
-    local card = Instance.new("TextButton")
-    card.Size = UDim2.new(0, 120, 0, 140)
-    card.BackgroundColor3 = Color3.fromRGB(14, 14, 14)
+for _, bike in ipairs(bikeList) do
+    local card = Instance.new('TextButton')
+    card.Size = UDim2.new(0, 130, 0, 150)
+    card.BackgroundColor3 = BGSUB
     card.BorderSizePixel = 1
-    card.BorderColor3 = Color3.fromRGB(60, 60, 60)
-    card.Text = ""
-    card.ZIndex = 7
+    card.BorderColor3 = BORDER
+    card.Text = ''
+    card.ZIndex = 12
     card.Parent = scroll
 
-    -- viewport
-    local vpf = Instance.new("ViewportFrame")
-    vpf.Size = UDim2.new(1, 0, 0, 100)
-    vpf.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
+    local vpf = Instance.new('ViewportFrame')
+    vpf.Size = UDim2.new(1, 0, 0, 108)
+    vpf.BackgroundColor3 = BG2
     vpf.BorderSizePixel = 0
-    vpf.ZIndex = 8
+    vpf.ZIndex = 13
     vpf.Parent = card
 
-    local worldModel = Instance.new("WorldModel")
-    worldModel.Parent = vpf
-
-    local cam = Instance.new("Camera")
+    local wm = Instance.new('WorldModel')
+    wm.Parent = vpf
+    local cam = Instance.new('Camera')
     vpf.CurrentCamera = cam
     cam.Parent = vpf
 
-    -- clone bike into viewport
     local ok, clone = pcall(function() return bike:Clone() end)
     if ok and clone then
-        clone.Parent = worldModel
-        task.defer(function()
-            local cf, size = clone:GetBoundingBox()
+        clone.Parent = wm
+        local cok, cf, size = pcall(function()
+            return clone:GetBoundingBox()
+        end)
+        if cok and cf then
             local dist = math.max(size.X, size.Y, size.Z) * 1.4
             cam.CFrame = CFrame.lookAt(
                 cf.Position + Vector3.new(dist, dist * 0.4, dist),
                 cf.Position
             )
-        end)
+        end
     end
 
-    -- name label
-    local nameLbl = Instance.new("TextLabel")
-    nameLbl.Size = UDim2.new(1, 0, 0, 36)
-    nameLbl.Position = UDim2.new(0, 0, 0, 100)
+    local sep = Instance.new('Frame')
+    sep.Size = UDim2.new(1, 0, 0, 1)
+    sep.Position = UDim2.new(0, 0, 0, 108)
+    sep.BackgroundColor3 = BORDER
+    sep.BorderSizePixel = 0
+    sep.ZIndex = 13
+    sep.Parent = card
+
+    local nameLbl = Instance.new('TextLabel')
+    nameLbl.Size = UDim2.new(1, -8, 0, 38)
+    nameLbl.Position = UDim2.new(0, 4, 0, 110)
     nameLbl.BackgroundTransparency = 1
     nameLbl.Text = bike.Name
-    nameLbl.TextColor3 = Color3.fromRGB(220, 220, 220)
+    nameLbl.TextColor3 = SUBTEXT
     nameLbl.Font = Enum.Font.Gotham
     nameLbl.TextSize = 11
     nameLbl.TextWrapped = true
-    nameLbl.ZIndex = 8
+    nameLbl.ZIndex = 13
     nameLbl.Parent = card
 
-    -- hover
     card.MouseEnter:Connect(function()
-        card.BorderColor3 = Color3.fromRGB(255, 255, 255)
+        TweenService:Create(card, TweenInfo.new(0.1), { BorderColor3 = ACCENT }):Play()
+        TweenService:Create(nameLbl, TweenInfo.new(0.1), { TextColor3 = TEXT }):Play()
     end)
     card.MouseLeave:Connect(function()
-        card.BorderColor3 = Color3.fromRGB(60, 60, 60)
+        TweenService:Create(card, TweenInfo.new(0.1), { BorderColor3 = BORDER }):Play()
+        TweenService:Create(nameLbl, TweenInfo.new(0.1), { TextColor3 = SUBTEXT }):Play()
     end)
-
+    card.MouseButton1Down:Connect(function()
+        TweenService:Create(card, TweenInfo.new(0.08), { BackgroundColor3 = BG }):Play()
+    end)
+    card.MouseButton1Up:Connect(function()
+        TweenService:Create(card, TweenInfo.new(0.08), { BackgroundColor3 = BGSUB }):Play()
+    end)
     card.MouseButton1Click:Connect(function()
         RS.Remotes.SpawnBike:FireServer(bike.Name)
-        showToast("Spawned " .. bike.Name)
+        showToast('Spawned ' .. bike.Name)
     end)
 end
 
--- spawner drag
-local sDragging, sDragStart, sStartPos
-spawnerTitle.InputBegan:Connect(function(inp)
+local sDrag, sDragStart, sStart
+titleBar.InputBegan:Connect(function(inp)
     if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        sDragging = true
+        sDrag = true
         sDragStart = inp.Position
-        sStartPos = spawnerFrame.Position
+        sStart = spawnerFrame.Position
     end
 end)
-spawnerTitle.InputEnded:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        sDragging = false
-    end
+titleBar.InputEnded:Connect(function(inp)
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 then sDrag = false end
 end)
-
--- money remote
-local function fireBike(name, price)
-    RS.Remotes.PurchaseBike:FireServer(name, {
-        ["Name"] = name,
-        ["Robux"] = false,
-        ["Speed"] = 40,
-        ["Kind"] = "E-BIKE",
-        ["ProductID"] = 3585359520,
-        ["Price"] = price
-    })
-end
-
-addBtn.MouseButton1Click:Connect(function()
-    fireBike("EBOX V2", -math.abs(tonumber(input.Text) or 0))
-end)
-subBtn.MouseButton1Click:Connect(function()
-    fireBike("EBOX V2", math.abs(tonumber(input.Text) or 0))
-end)
-
-allBtn.MouseButton1Click:Connect(function()
-    allBtn.Text = "WORKING..."
-    allBtn.Active = false
-    for _, bike in ipairs(RS.Bikes:GetChildren()) do
-        fireBike(bike.Name, 0)
-        task.wait(0.1)
-    end
-    allBtn.Text = "DONE (" .. #bikes .. ")"
-    task.wait(2)
-    allBtn.Text = "GET ALL"
-    allBtn.Active = true
-end)
-
-sellAllBtn.MouseButton1Click:Connect(function()
-    sellAllBtn.Text = "WORKING..."
-    sellAllBtn.Active = false
-    for _, bike in ipairs(RS.Bikes:GetChildren()) do
-        RS.Remotes.SellBike:FireServer(bike.Name)
-        task.wait(0.1)
-    end
-    sellAllBtn.Text = "DONE (" .. #bikes .. ")"
-    task.wait(2)
-    sellAllBtn.Text = "SELL ALL"
-    sellAllBtn.Active = true
-end)
-
-spawnerBtn.MouseButton1Click:Connect(function()
-    spawnerOpen = not spawnerOpen
-    spawnerFrame.Visible = spawnerOpen
-end)
-
--- drag both frames
-local dragging, dragStart, startPos
-frame.InputBegan:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        dragStart = inp.Position
-        startPos = frame.Position
-    end
-end)
-frame.InputEnded:Connect(function(inp)
-    if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
-end)
-
 UIS.InputChanged:Connect(function(inp)
-    if inp.UserInputType ~= Enum.UserInputType.MouseMovement then return end
-    if dragging then
-        local delta = inp.Position - dragStart
-        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-    if sDragging then
-        local delta = inp.Position - sDragStart
-        spawnerFrame.Position = UDim2.new(sStartPos.X.Scale, sStartPos.X.Offset + delta.X, sStartPos.Y.Scale, sStartPos.Y.Offset + delta.Y)
+    if sDrag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+        local d = inp.Position - sDragStart
+        spawnerFrame.Position = UDim2.new(sStart.X.Scale, sStart.X.Offset + d.X, sStart.Y.Scale, sStart.Y.Offset + d.Y)
     end
 end)
+
+Toggles.SpawnerToggle:OnChanged(function()
+    spawnerFrame.Visible = Toggles.SpawnerToggle.Value
+end)
+
+-- keybind (change hideKey to whatever you want)
+local hideKey = Enum.KeyCode.Insert
 
 UIS.InputBegan:Connect(function(inp, gp)
     if gp then return end
-    if inp.KeyCode == Enum.KeyCode.Insert then
-        gui:Destroy()
+    if inp.KeyCode == hideKey then
+        Library:Toggle()
+        spawnerFrame.Visible = false
+        Toggles.SpawnerToggle:SetValue(false)
     end
 end)
