@@ -20,7 +20,7 @@ local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
 local Window = Library:CreateWindow({
-    Title = 'SuperMoto Menu',
+    Title = 'Konstant',
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -553,6 +553,121 @@ Right:AddButton({
 
         playSuccess()
         showToast('Turn patched — ' .. degPerS .. ' deg/s')
+    end
+})
+
+Right:AddDivider()
+
+Right:AddInput('AnimSpeedInput', {
+    Default = '1.0',
+    Numeric = true,
+    Finished = false,
+    Text = 'Anim Speed (multiplier)',
+})
+
+Right:AddInput('AnimFadeInput', {
+    Default = '0.3',
+    Numeric = true,
+    Finished = false,
+    Text = 'Anim Transition (seconds)',
+})
+
+Right:AddToggle('AnimTweaks', {
+    Text = 'Anim Tweaks (bike only)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local RS2 = game:GetService('RunService')
+
+            -- O(1) bike check: Humanoid.SeatPart returns the seat or nil
+            local function onBike()
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return false, nil end
+                local seat = hum.SeatPart
+                return seat and seat:IsA('VehicleSeat'), hum
+            end
+
+            -- hook __namecall to intercept AnimationTrack:Play and
+            -- inject our custom fadeTime + speed so every animation
+            -- that the game plays while on a bike gets smooth transitions.
+            local mt    = getrawmetatable(game)
+            local oldNC = mt.__namecall
+            setreadonly(mt, false)
+            mt.__namecall = newcclosure(function(self, ...)
+                local method = getnamecallmethod()
+                if method == 'Play' then
+                    local ok2, isAnim = pcall(function()
+                        return typeof(self) == 'Instance' and self:IsA('AnimationTrack')
+                    end)
+                    if ok2 and isAnim then
+                        local riding = onBike()
+                        if riding then
+                            local fade  = tonumber(Options.AnimFadeInput.Value)  or 0.3
+                            local speed = tonumber(Options.AnimSpeedInput.Value) or 1.0
+                            -- Play(fadeTime, weight, speed)
+                            return oldNC(self, fade, 1, speed)
+                        end
+                    end
+                end
+                return oldNC(self, ...)
+            end)
+            setreadonly(mt, true)
+            _G.AnimNCHook = oldNC
+            _G.AnimMT     = mt
+
+            -- heartbeat: AdjustSpeed on already-playing tracks so
+            -- the multiplier applies even to animations that started
+            -- before the toggle was enabled. runs every 30 frames (~0.5s).
+            local tick = 0
+            _G.AnimConn = RS2.Heartbeat:Connect(function()
+                tick += 1
+                if tick < 30 then return end
+                tick = 0
+
+                local riding, hum = onBike()
+                if not riding or not hum then return end
+
+                local animator = hum:FindFirstChildWhichIsA('Animator')
+                if not animator then return end
+
+                local speed = tonumber(Options.AnimSpeedInput.Value) or 1.0
+                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                    pcall(function() track:AdjustSpeed(speed) end)
+                end
+            end)
+
+            showToast('Anim tweaks ON')
+        else
+            -- disconnect speed scanner
+            if _G.AnimConn then
+                _G.AnimConn:Disconnect()
+                _G.AnimConn = nil
+            end
+
+            -- restore original __namecall
+            if _G.AnimMT and _G.AnimNCHook then
+                pcall(function()
+                    setreadonly(_G.AnimMT, false)
+                    _G.AnimMT.__namecall = _G.AnimNCHook
+                    setreadonly(_G.AnimMT, true)
+                end)
+                _G.AnimNCHook = nil
+                _G.AnimMT     = nil
+            end
+
+            -- reset all currently playing tracks back to 1x speed
+            local char = plr.Character
+            local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+            local anim = hum  and hum:FindFirstChildWhichIsA('Animator')
+            if anim then
+                for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+                    pcall(function() track:AdjustSpeed(1) end)
+                end
+            end
+
+            showToast('Anim tweaks OFF')
+        end
     end
 })
 
@@ -2473,7 +2588,7 @@ _G.SMCleanup = function()
     _G.FlingStop = true
 
     -- disconnect all RunService connections
-    for _, key in ipairs({'SpeedConn', 'BrakeConn', 'TurnConn', 'HitboxConn',
+    for _, key in ipairs({'SpeedConn', 'BrakeConn', 'TurnConn', 'AnimConn', 'HitboxConn',
                           'AntiAdminConn', 'OptimizerConn'}) do
         if _G[key] then
             pcall(function() _G[key]:Disconnect() end)
