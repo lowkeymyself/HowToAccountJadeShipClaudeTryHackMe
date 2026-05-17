@@ -155,54 +155,72 @@ Left:AddToggle('StreamOptimizer', {
         if val then
             local RS2 = game:GetService('RunService')
 
-            local char = plr.Character
-            local hrp  = char and char:FindFirstChild('HumanoidRootPart')
+            -- carpet-bomb the entire map with a dense grid.
+            -- 200-stud step across ±4000 on X and Z = 41*41 = 1681 points.
+            -- fired in batches of 10 per Heartbeat to avoid a single-frame spike.
+            -- forces the streaming engine to load every chunk immediately
+            -- instead of waiting for the player to physically approach each area.
+            local GRID_MIN  = -4000
+            local GRID_MAX  =  4000
+            local GRID_STEP =  200
+            local BATCH     =  10   -- requests per frame
 
-            -- initial burst: fire at 8 directions * 4 distances (300..1200 studs)
-            -- causes one spike upfront, then nothing ever again
-            if hrp then
-                local origin = hrp.Position
-                local dirs = {
-                    Vector3.new(1,0,0), Vector3.new(-1,0,0),
-                    Vector3.new(0,0,1), Vector3.new(0,0,-1),
-                    Vector3.new(1,0,1).Unit,  Vector3.new(-1,0,1).Unit,
-                    Vector3.new(1,0,-1).Unit, Vector3.new(-1,0,-1).Unit,
-                }
-                task.spawn(function()
-                    pcall(function() workspace:RequestStreamAroundAsync(origin, 5) end)
-                end)
-                for _, dir in ipairs(dirs) do
-                    for _, dist in ipairs({300, 600, 900, 1200}) do
-                        local pos = origin + dir * dist
-                        task.spawn(function()
-                            pcall(function() workspace:RequestStreamAroundAsync(pos, 5) end)
-                        end)
-                    end
+            local points = {}
+            local Y = 50  -- mid-height so request covers both terrain and buildings
+            for x = GRID_MIN, GRID_MAX, GRID_STEP do
+                for z = GRID_MIN, GRID_MAX, GRID_STEP do
+                    table.insert(points, Vector3.new(x, Y, z))
                 end
             end
 
-            -- ongoing: every ~1s fire 800 studs ahead so newly entered areas
-            -- are still preloaded as you roam after the initial burst
-            local timer = 0
+            -- shuffle so loading fans out across the map evenly
+            for i = #points, 2, -1 do
+                local j = math.random(i)
+                points[i], points[j] = points[j], points[i]
+            end
+
+            local idx          = 0
+            local lastPct      = -1
+
+            showToast('Stream Optimizer ON — loading ' .. #points .. ' chunks...')
+
             _G.OptimizerConn = RS2.Heartbeat:Connect(function()
-                timer += 1
-                if timer < 60 then return end
-                timer = 0
+                if idx >= #points then
+                    -- all chunks done; light pulse to keep the player's current
+                    -- area resident in case they move to the edge of the map
+                    local c    = plr.Character
+                    local hrp2 = c and c:FindFirstChild('HumanoidRootPart')
+                    if hrp2 then
+                        pcall(function()
+                            workspace:RequestStreamAroundAsync(hrp2.Position, 3)
+                        end)
+                    end
+                    return
+                end
 
-                local c   = plr.Character
-                local hrp2 = c and c:FindFirstChild('HumanoidRootPart')
-                if not hrp2 then return end
+                -- fire BATCH points this frame
+                local batchEnd = math.min(idx + BATCH, #points)
+                for i = idx + 1, batchEnd do
+                    local pos = points[i]
+                    task.spawn(function()
+                        pcall(function()
+                            workspace:RequestStreamAroundAsync(pos, 3)
+                        end)
+                    end)
+                end
+                idx = batchEnd
 
-                local vel = hrp2.AssemblyLinearVelocity
-                local dir = vel.Magnitude > 1 and vel.Unit or hrp2.CFrame.LookVector
-                local lookAhead = hrp2.Position + dir * 800
-
-                task.spawn(function()
-                    pcall(function() workspace:RequestStreamAroundAsync(lookAhead, 3) end)
-                end)
+                -- toast progress every 10% so you can see it working
+                local pct = math.floor(idx / #points * 10) * 10
+                if pct ~= lastPct then
+                    lastPct = pct
+                    if pct < 100 then
+                        showToast('Loading... ' .. pct .. '%')
+                    else
+                        showToast('Map fully loaded!')
+                    end
+                end
             end)
-
-            showToast('Stream Optimizer ON — preloading map...')
         else
             if _G.OptimizerConn then
                 _G.OptimizerConn:Disconnect()
@@ -469,6 +487,75 @@ Right:AddButton({
 
 Right:AddDivider()
 
+Right:AddInput('TurnInput', {
+    Default = '90',
+    Numeric = true,
+    Finished = false,
+    Text = 'Turn Speed (deg/s)',
+})
+
+Right:AddButton({
+    Text = 'Unpatch Turn',
+    Func = function()
+        if _G.TurnConn then
+            _G.TurnConn:Disconnect()
+            _G.TurnConn = nil
+            showToast('Turn unpatched')
+        else
+            showToast('Nothing to unpatch')
+        end
+    end
+})
+
+Right:AddButton({
+    Text = 'Patch Turn',
+    Func = function()
+        local RS2  = game:GetService('RunService')
+        local char = plr.Character
+
+        local seat
+        for _, v in pairs(workspace:GetDescendants()) do
+            if v:IsA('VehicleSeat') and v.Occupant
+            and v.Occupant.Parent == char then
+                seat = v
+                break
+            end
+        end
+
+        if not seat then
+            showToast('Get in a bike first')
+            return
+        end
+
+        if _G.TurnConn then
+            _G.TurnConn:Disconnect()
+            _G.TurnConn = nil
+        end
+
+        local root    = seat.Parent:FindFirstChildWhichIsA('BasePart')
+        local degPerS = tonumber(Options.TurnInput.Value) or 90
+        local radPerS = math.rad(degPerS)  -- convert to radians/s for angular velocity
+
+        _G.TurnConn = RS2.Heartbeat:Connect(function(dt)
+            local aDown = UIS:IsKeyDown(Enum.KeyCode.A)
+            local dDown = UIS:IsKeyDown(Enum.KeyCode.D)
+            if not aDown and not dDown then return end
+            if not root or not root.Parent then
+                _G.TurnConn:Disconnect()
+                _G.TurnConn = nil
+                return
+            end
+            -- positive Y = left (A), negative Y = right (D)
+            local dir = aDown and 1 or -1
+            local cur = root.AssemblyAngularVelocity
+            root.AssemblyAngularVelocity = Vector3.new(cur.X, dir * radPerS, cur.Z)
+        end)
+
+        playSuccess()
+        showToast('Turn patched — ' .. degPerS .. ' deg/s')
+    end
+})
+
 Right:AddToggle('HitboxViewer', {
     Text = 'Hitbox Viewer',
     Default = false,
@@ -520,8 +607,148 @@ SaveManager:BuildConfigSection(Tabs.Settings)
 -- MAPS TAB
 -- ============================================================
 
-local loadedMaps = {}   -- { obj, name, x, z }
-local lastMapPos = nil  -- where to teleport after load
+local HttpService = game:GetService('HttpService')
+local MPS        = game:GetService('MarketplaceService')
+
+-- ============================================================
+-- PASSWORD GATE MODULE
+-- Spawns a modal overlay, yields the calling coroutine until
+-- the player confirms or cancels. Returns true only when the
+-- hardcoded password is entered correctly.
+-- ============================================================
+local PasswordGate = (function()
+    local CORRECT = 'LSEAutomated'
+
+    local function ask()
+        local signal = Instance.new('BindableEvent')
+        local result = false
+
+        local psg = Instance.new('ScreenGui')
+        psg.Name           = 'PasswordGateGui'
+        psg.ResetOnSpawn   = false
+        psg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        psg.DisplayOrder   = 100
+        psg.Parent         = plr:WaitForChild('PlayerGui')
+
+        -- card pinned to top-center
+        local card = Instance.new('Frame')
+        card.Size             = UDim2.new(0, 320, 0, 130)
+        card.Position         = UDim2.new(0.5, -160, 0, 12)
+        card.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+        card.BorderSizePixel  = 1
+        card.BorderColor3     = Color3.fromRGB(60, 60, 60)
+        card.ZIndex           = 2
+        card.Parent           = psg
+
+        local title = Instance.new('TextLabel')
+        title.Size                 = UDim2.new(1, 0, 0, 28)
+        title.Position             = UDim2.new(0, 0, 0, 0)
+        title.BackgroundColor3     = Color3.fromRGB(35, 35, 35)
+        title.BorderSizePixel      = 0
+        title.Text                 = 'Password Required'
+        title.TextColor3           = Color3.fromRGB(210, 210, 210)
+        title.Font                 = Enum.Font.SourceSans
+        title.TextSize             = 14
+        title.TextXAlignment       = Enum.TextXAlignment.Left
+        title.ZIndex               = 3
+        title.Parent               = card
+        -- left padding via inner label offset
+        title.Position             = UDim2.new(0, 8, 0, 0)
+        title.Size                 = UDim2.new(1, -8, 0, 28)
+
+        local box = Instance.new('TextBox')
+        box.Size             = UDim2.new(1, -16, 0, 28)
+        box.Position         = UDim2.new(0, 8, 0, 36)
+        box.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+        box.BorderSizePixel  = 1
+        box.BorderColor3     = Color3.fromRGB(55, 55, 55)
+        box.TextColor3       = Color3.fromRGB(200, 200, 200)
+        box.PlaceholderText  = 'enter password'
+        box.PlaceholderColor3 = Color3.fromRGB(75, 75, 75)
+        box.Text             = ''
+        box.Font             = Enum.Font.SourceSans
+        box.TextSize         = 14
+        box.ClearTextOnFocus = false
+        box.ZIndex           = 3
+        box.Parent           = card
+
+        local status = Instance.new('TextLabel')
+        status.Size              = UDim2.new(1, -16, 0, 14)
+        status.Position          = UDim2.new(0, 8, 0, 70)
+        status.BackgroundTransparency = 1
+        status.Text              = ''
+        status.TextColor3        = Color3.fromRGB(200, 70, 70)
+        status.Font              = Enum.Font.SourceSans
+        status.TextSize          = 13
+        status.TextXAlignment    = Enum.TextXAlignment.Left
+        status.ZIndex            = 3
+        status.Parent            = card
+
+        local confirmBtn = Instance.new('TextButton')
+        confirmBtn.Size             = UDim2.new(0, 100, 0, 26)
+        confirmBtn.Position         = UDim2.new(0, 8, 0, 96)
+        confirmBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+        confirmBtn.BorderSizePixel  = 1
+        confirmBtn.BorderColor3     = Color3.fromRGB(80, 80, 80)
+        confirmBtn.Text             = 'Confirm'
+        confirmBtn.TextColor3       = Color3.fromRGB(210, 210, 210)
+        confirmBtn.Font             = Enum.Font.SourceSans
+        confirmBtn.TextSize         = 14
+        confirmBtn.ZIndex           = 3
+        confirmBtn.Parent           = card
+
+        local cancelBtn = Instance.new('TextButton')
+        cancelBtn.Size             = UDim2.new(0, 100, 0, 26)
+        cancelBtn.Position         = UDim2.new(1, -108, 0, 96)
+        cancelBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+        cancelBtn.BorderSizePixel  = 1
+        cancelBtn.BorderColor3     = Color3.fromRGB(65, 65, 65)
+        cancelBtn.Text             = 'Cancel'
+        cancelBtn.TextColor3       = Color3.fromRGB(150, 150, 150)
+        cancelBtn.Font             = Enum.Font.SourceSans
+        cancelBtn.TextSize         = 14
+        cancelBtn.ZIndex           = 3
+        cancelBtn.Parent           = card
+
+        local function cleanup(ok)
+            result = ok
+            psg:Destroy()
+            signal:Fire()
+        end
+
+        confirmBtn.MouseButton1Click:Connect(function()
+            if box.Text == CORRECT then
+                cleanup(true)
+            else
+                status.Text = 'wrong password'
+                box.Text    = ''
+            end
+        end)
+
+        box.FocusLost:Connect(function(enterPressed)
+            if not enterPressed then return end
+            if box.Text == CORRECT then
+                cleanup(true)
+            else
+                status.Text = 'wrong password'
+                box.Text    = ''
+            end
+        end)
+
+        cancelBtn.MouseButton1Click:Connect(function()
+            cleanup(false)
+        end)
+
+        signal.Event:Wait()
+        signal:Destroy()
+        return result
+    end
+
+    return { ask = ask }
+end)()
+
+local loadedMaps = {}
+local lastMapPos = nil
 
 -- fixed slots: same coords for everyone so friends loading the same map end up together
 -- spaced 12000 studs apart so even large maps never overlap; within safe Roblox float range
@@ -531,150 +758,627 @@ local MAP_SLOTS = {
     {x = 32000, z =  8000},  -- slot 3
 }
 
-local MapLeft  = Tabs.Maps:AddLeftGroupbox('Load')
-local MapRight = Tabs.Maps:AddRightGroupbox('Manage')
+-- in the target game the full UI is shown (Load by asset ID, Import, teleport buttons).
+-- in any other game only Clone + Export are available: grab that game's map, save it to
+-- your PC via the executor file system, then import it next time you're in the supermoto game.
+local TARGET_GAME_ID = 74559235274954
+local isTargetGame   = game.PlaceId == TARGET_GAME_ID
 
-MapLeft:AddInput('MapAssetId', {
-    Default  = '',
-    Numeric  = false,
-    Finished = false,
-    Text     = 'Asset ID  (or paste the full URL)',
-})
+local MAP_SAVE_FOLDER = 'SuperMotoMaps'
 
-MapLeft:AddButton({
-    Text = 'Load Map',
-    Func = function()
-        local raw = Options.MapAssetId.Value
-        if raw == '' then showToast('Enter an asset ID first') return end
+-- ---- helpers -----------------------------------------------------------
+local function c3(col) -- Color3 -> {r,g,b} 0-255
+    return math.floor(col.R*255+0.5), math.floor(col.G*255+0.5), math.floor(col.B*255+0.5)
+end
+local function fc(r,g,b) return Color3.fromRGB(r,g,b) end
 
-        local assetId = raw:match('%d+')
-        if not assetId then showToast('Could not read an ID from that') return end
+-- ---- serialise ---------------------------------------------------------
+-- Walks every BasePart and serialises: geometry, appearance, surface types,
+-- physical properties, and supported children (Decal, Texture,
+-- SurfaceAppearance, lights, Sound).
+-- Positions stored as-is; importer auto-recentres at the target slot.
+local function exportMap(mapEntry)
+    if type(writefile) ~= 'function' then
+        showToast('Executor has no file-write support')
+        return
+    end
 
-        local slot = #loadedMaps + 1
-        if slot > #MAP_SLOTS then
-            showToast('Max 3 maps loaded — clear one first')
-            return
-        end
-
-        showToast('Downloading map ' .. slot .. '  (' .. assetId .. ')...')
-        task.spawn(function()
-            local ok, objects = pcall(function()
-                return game:GetObjects('rbxassetid://' .. assetId)
+    local parts = {}
+    for _, part in ipairs(mapEntry.obj:GetDescendants()) do
+        if not part:IsA('BasePart') then continue end
+        pcall(function()
+            local cf = part.CFrame
+            local rv, uv, lv = cf.RightVector, cf.UpVector, cf.LookVector
+            local pr, pg, pb = c3(part.Color)
+            local e = {
+                cls = part.ClassName,
+                cx  = math.floor(cf.X*1000+0.5)/1000,
+                cy  = math.floor(cf.Y*1000+0.5)/1000,
+                cz  = math.floor(cf.Z*1000+0.5)/1000,
+                r00=math.floor(rv.X*1e6+0.5)/1e6, r01=math.floor(rv.Y*1e6+0.5)/1e6, r02=math.floor(rv.Z*1e6+0.5)/1e6,
+                r10=math.floor(uv.X*1e6+0.5)/1e6, r11=math.floor(uv.Y*1e6+0.5)/1e6, r12=math.floor(uv.Z*1e6+0.5)/1e6,
+                r20=math.floor(lv.X*1e6+0.5)/1e6, r21=math.floor(lv.Y*1e6+0.5)/1e6, r22=math.floor(lv.Z*1e6+0.5)/1e6,
+                sx=part.Size.X, sy=part.Size.Y, sz=part.Size.Z,
+                r=pr, g=pg, b=pb,
+                mat = part.Material.Name,
+                tr  = part.Transparency,
+                ref = part.Reflectance,
+                cs  = part.CastShadow and 1 or 0,
+                ts  = part.TopSurface.Name,
+                bos = part.BottomSurface.Name,
+                fs  = part.FrontSurface.Name,
+                bks = part.BackSurface.Name,
+                ls  = part.LeftSurface.Name,
+                rs  = part.RightSurface.Name,
+            }
+            -- optional properties that may not exist on all instances
+            pcall(function() e.ds    = part.DoubleSided and 1 or 0 end)
+            pcall(function() e.shape = part.Shape.Name end)
+            pcall(function()
+                local cpp = part.CustomPhysicalProperties
+                if cpp then
+                    e.cpp = { d=cpp.Density, f=cpp.Friction, el=cpp.Elasticity,
+                              fw=cpp.FrictionWeight, ew=cpp.ElasticityWeight }
+                end
             end)
-            if not ok or not objects or #objects == 0 then
-                showToast('Load failed — check the ID')
-                return
+            -- children: each wrapped individually so one bad child doesn't skip the rest
+            local ch = {}
+            for _, kid in ipairs(part:GetChildren()) do
+                pcall(function()
+                    if kid:IsA('SpecialMesh') and kid.MeshId ~= '' then
+                        table.insert(ch, { t='SM', mid=kid.MeshId, tex=kid.TextureId,
+                            sx=kid.Scale.X, sy=kid.Scale.Y, sz=kid.Scale.Z })
+                    elseif kid:IsA('SurfaceAppearance') then
+                        local sr,sg,sb = c3(kid.Color)
+                        local entry = { t='SA', r=sr,g=sg,b=sb }
+                        pcall(function() entry.alb   = kid.AlbedoMap    end)
+                        pcall(function() entry.norm  = kid.NormalMap    end)
+                        pcall(function() entry.met   = kid.MetalnessMap end)
+                        pcall(function() entry.rough = kid.RoughnessMap end)
+                        table.insert(ch, entry)
+                    elseif kid:IsA('Decal') then
+                        local dr,dg,db = c3(kid.Color3)
+                        table.insert(ch, { t='D', face=kid.Face.Name, tex=kid.Texture,
+                            tr=kid.Transparency, r=dr,g=dg,b=db })
+                    elseif kid:IsA('Texture') then
+                        local txr,txg,txb = c3(kid.Color3)
+                        table.insert(ch, { t='TX', face=kid.Face.Name, tex=kid.Texture,
+                            tr=kid.Transparency, r=txr,g=txg,b=txb,
+                            su=kid.StudsPerTileU, sv=kid.StudsPerTileV,
+                            ou=kid.OffsetStudsU,  ov=kid.OffsetStudsV })
+                    elseif kid:IsA('PointLight') then
+                        local lr,lg,lb = c3(kid.Color)
+                        table.insert(ch, { t='PL', br=kid.Brightness, range=kid.Range,
+                            r=lr,g=lg,b=lb, shad=kid.Shadows and 1 or 0, en=kid.Enabled and 1 or 0 })
+                    elseif kid:IsA('SpotLight') then
+                        local lr,lg,lb = c3(kid.Color)
+                        table.insert(ch, { t='SL', br=kid.Brightness, range=kid.Range,
+                            angle=kid.Angle, face=kid.Face.Name,
+                            r=lr,g=lg,b=lb, shad=kid.Shadows and 1 or 0, en=kid.Enabled and 1 or 0 })
+                    elseif kid:IsA('SurfaceLight') then
+                        local lr,lg,lb = c3(kid.Color)
+                        table.insert(ch, { t='SFL', br=kid.Brightness, range=kid.Range,
+                            angle=kid.Angle, face=kid.Face.Name,
+                            r=lr,g=lg,b=lb, shad=kid.Shadows and 1 or 0, en=kid.Enabled and 1 or 0 })
+                    elseif kid:IsA('Sound') then
+                        table.insert(ch, { t='SND', sid=kid.SoundId, vol=kid.Volume,
+                            pitch=kid.PlaybackSpeed, loop=kid.Looped and 1 or 0 })
+                    end
+                end)
+            end
+            if #ch > 0 then e.ch = ch end
+            table.insert(parts, e)
+        end)
+    end
+
+    if #parts == 0 then showToast('Nothing to export') return end
+
+    local json = HttpService:JSONEncode({ v=2, game=mapEntry.name, parts=parts })
+
+    pcall(function()
+        if type(isfolder)=='function' and not isfolder(MAP_SAVE_FOLDER) then
+            if type(makefolder)=='function' then makefolder(MAP_SAVE_FOLDER) end
+        end
+    end)
+
+    local filename = mapEntry.name:gsub('[^%w%-]','_'):sub(1,40) .. '.json'
+    local ok, err  = pcall(writefile, MAP_SAVE_FOLDER..'/'..filename, json)
+    if ok then
+        showToast('Saved '..#parts..' parts  ->  '..filename)
+    else
+        showToast('Export failed: '..tostring(err))
+    end
+end
+
+-- ---- deserialise -------------------------------------------------------
+local function importMap(jsonStr, slot)
+    local ok, data = pcall(function() return HttpService:JSONDecode(jsonStr) end)
+    if not ok or not data or not data.parts or #data.parts == 0 then
+        showToast('Could not parse file')
+        return
+    end
+
+    local spawnX = MAP_SLOTS[slot].x
+    local spawnZ = MAP_SLOTS[slot].z
+
+    local minX, minZ =  math.huge,  math.huge
+    local maxX, maxZ = -math.huge, -math.huge
+    for _, e in ipairs(data.parts) do
+        if e.cx < minX then minX = e.cx end
+        if e.cx > maxX then maxX = e.cx end
+        if e.cz < minZ then minZ = e.cz end
+        if e.cz > maxZ then maxZ = e.cz end
+    end
+    local offX = spawnX - (minX+maxX)/2
+    local offZ = spawnZ - (minZ+maxZ)/2
+
+    local folder = Instance.new('Folder')
+    folder.Name  = 'ImportedMap_'..slot
+
+    local count = 0
+    for _, e in ipairs(data.parts) do
+        pcall(function()
+            -- part class
+            local part
+            if e.cls == 'WedgePart' then
+                part = Instance.new('WedgePart')
+            elseif e.cls == 'CornerWedgePart' then
+                part = Instance.new('CornerWedgePart')
+            else
+                part = Instance.new('Part')  -- MeshPart falls back to Part
             end
 
-            local spawnX = MAP_SLOTS[slot].x
-            local spawnZ = MAP_SLOTS[slot].z
+            -- geometry
+            part.CFrame = CFrame.new(
+                e.cx+offX, e.cy, e.cz+offZ,
+                e.r00, e.r01, e.r02,
+                e.r10, e.r11, e.r12,
+                e.r20, e.r21, e.r22
+            )
+            part.Size = Vector3.new(e.sx, e.sy, e.sz)
 
-            local loaded = 0
-            for _, obj in ipairs(objects) do
-                if obj:IsA('Model') or obj:IsA('BasePart') then
+            -- appearance
+            part.Color        = fc(e.r, e.g, e.b)
+            part.Transparency = e.tr  or 0
+            part.Reflectance  = e.ref or 0
+            part.CastShadow   = e.cs ~= 0
+            if e.ds ~= nil then pcall(function() part.DoubleSided = e.ds ~= 0 end) end
+            pcall(function() part.Material = Enum.Material[e.mat] end)
+            if e.shape and e.shape ~= 'Block' then
+                pcall(function() part.Shape = Enum.PartType[e.shape] end)
+            end
+
+            -- surface types
+            pcall(function() part.TopSurface    = Enum.SurfaceType[e.ts]  end)
+            pcall(function() part.BottomSurface = Enum.SurfaceType[e.bos] end)
+            pcall(function() part.FrontSurface  = Enum.SurfaceType[e.fs]  end)
+            pcall(function() part.BackSurface   = Enum.SurfaceType[e.bks] end)
+            pcall(function() part.LeftSurface   = Enum.SurfaceType[e.ls]  end)
+            pcall(function() part.RightSurface  = Enum.SurfaceType[e.rs]  end)
+
+            -- custom physical properties
+            if e.cpp then
+                pcall(function()
+                    part.CustomPhysicalProperties = PhysicalProperties.new(
+                        e.cpp.d, e.cpp.f, e.cpp.el, e.cpp.fw, e.cpp.ew)
+                end)
+            end
+
+            part.Anchored   = true
+            part.CanCollide = true
+
+            -- children
+            if e.ch then
+                for _, c in ipairs(e.ch) do
                     pcall(function()
-                        if obj:IsA('Model') then
-                            local bbCF, bbSize = obj:GetBoundingBox()
-                            local bottomY   = bbCF.Position.Y - bbSize.Y / 2
-                            local pivotCF   = obj:GetPivot()
-                            local newPivotY = pivotCF.Position.Y + (2 - bottomY)
-                            obj:PivotTo(CFrame.new(spawnX, newPivotY, spawnZ))
-                        else
-                            obj.Position = Vector3.new(spawnX, obj.Size.Y / 2 + 2, spawnZ)
+                        if c.t == 'SM' then
+                            local sm = Instance.new('SpecialMesh')
+                            sm.MeshType  = Enum.MeshType.FileMesh
+                            sm.MeshId    = c.mid
+                            sm.TextureId = c.tex or ''
+                            sm.Scale     = Vector3.new(c.sx or 1, c.sy or 1, c.sz or 1)
+                            sm.Parent    = part
+                        elseif c.t == 'SA' then
+                            local sa = Instance.new('SurfaceAppearance')
+                            sa.AlbedoMap    = c.alb   or ''
+                            sa.NormalMap    = c.norm  or ''
+                            sa.MetalnessMap = c.met   or ''
+                            sa.RoughnessMap = c.rough or ''
+                            sa.Color        = fc(c.r, c.g, c.b)
+                            sa.Parent       = part
+                        elseif c.t == 'D' then
+                            local d = Instance.new('Decal')
+                            pcall(function() d.Face = Enum.NormalId[c.face] end)
+                            d.Texture      = c.tex or ''
+                            d.Transparency = c.tr  or 0
+                            d.Color3       = fc(c.r, c.g, c.b)
+                            d.Parent       = part
+                        elseif c.t == 'TX' then
+                            local tx = Instance.new('Texture')
+                            pcall(function() tx.Face = Enum.NormalId[c.face] end)
+                            tx.Texture       = c.tex or ''
+                            tx.Transparency  = c.tr  or 0
+                            tx.Color3        = fc(c.r, c.g, c.b)
+                            tx.StudsPerTileU = c.su or 1
+                            tx.StudsPerTileV = c.sv or 1
+                            tx.OffsetStudsU  = c.ou or 0
+                            tx.OffsetStudsV  = c.ov or 0
+                            tx.Parent        = part
+                        elseif c.t == 'PL' then
+                            local l = Instance.new('PointLight')
+                            l.Brightness = c.br or 1
+                            l.Range      = c.range or 20
+                            l.Color      = fc(c.r, c.g, c.b)
+                            l.Shadows    = c.shad ~= 0
+                            l.Enabled    = c.en   ~= 0
+                            l.Parent     = part
+                        elseif c.t == 'SL' then
+                            local l = Instance.new('SpotLight')
+                            l.Brightness = c.br or 1
+                            l.Range      = c.range or 20
+                            l.Angle      = c.angle or 45
+                            pcall(function() l.Face = Enum.NormalId[c.face] end)
+                            l.Color      = fc(c.r, c.g, c.b)
+                            l.Shadows    = c.shad ~= 0
+                            l.Enabled    = c.en   ~= 0
+                            l.Parent     = part
+                        elseif c.t == 'SFL' then
+                            local l = Instance.new('SurfaceLight')
+                            l.Brightness = c.br or 1
+                            l.Range      = c.range or 20
+                            l.Angle      = c.angle or 45
+                            pcall(function() l.Face = Enum.NormalId[c.face] end)
+                            l.Color      = fc(c.r, c.g, c.b)
+                            l.Shadows    = c.shad ~= 0
+                            l.Enabled    = c.en   ~= 0
+                            l.Parent     = part
+                        elseif c.t == 'SND' then
+                            local s = Instance.new('Sound')
+                            s.SoundId        = c.sid   or ''
+                            s.Volume         = c.vol   or 1
+                            s.PlaybackSpeed  = c.pitch or 1
+                            s.Looped         = c.loop  ~= 0
+                            s.Parent         = part
                         end
                     end)
-                    obj.Parent = workspace
-
-                    -- force every part to be anchored and collideable so the
-                    -- client-side bike physics actually land on the map
-                    for _, part in ipairs(obj:GetDescendants()) do
-                        if part:IsA('BasePart') then
-                            part.Anchored   = true
-                            part.CanCollide = true
-                        end
-                    end
-                    if obj:IsA('BasePart') then
-                        obj.Anchored   = true
-                        obj.CanCollide = true
-                    end
-
-                    local mapName = (obj.Name ~= '' and obj.Name) or ('Asset ' .. assetId)
-                    table.insert(loadedMaps, {obj = obj, name = mapName, x = spawnX, z = spawnZ})
-                    lastMapPos = Vector3.new(spawnX, 20, spawnZ)
-                    loaded += 1
                 end
             end
 
-            if loaded > 0 then
-                showToast('Loaded: ' .. loadedMaps[#loadedMaps].name .. ' (#' .. #loadedMaps .. ')')
-            else
-                showToast('Model had no geometry to load')
-            end
+            part.Parent = folder
+            count += 1
         end)
     end
-})
 
-MapLeft:AddDivider()
+    folder.Parent = workspace
+    local name = data.game or ('Imported Map '..slot)
+    table.insert(loadedMaps, {obj=folder, name=name, x=spawnX, z=spawnZ})
+    lastMapPos = Vector3.new(spawnX, 20, spawnZ)
+    showToast('Imported '..count..' parts  ->  slot '..slot..'  ('..name..')')
+end
+
+-- ---- teleport helper --------------------------------------------------
+-- Picks a random BasePart from the map folder and lands the player 5 studs
+-- above its top face. Guaranteed to hit something that exists.
+local function teleportOntoMap(entry)
+    local char = plr.Character
+    local hrp  = char and char:FindFirstChild('HumanoidRootPart')
+    if not hrp then return end
+
+    local parts = {}
+    for _, p in ipairs(entry.obj:GetDescendants()) do
+        if p:IsA('BasePart') then
+            table.insert(parts, p)
+        end
+    end
+
+    if #parts == 0 then showToast('Map has no parts') return end
+
+    local picked = parts[math.random(1, #parts)]
+    local topY   = picked.Position.Y + picked.Size.Y / 2
+    hrp.CFrame   = CFrame.new(picked.Position.X, topY + 5, picked.Position.Z)
+    showToast('Teleported to ' .. entry.name)
+end
+
+-- ---- clone -------------------------------------------------------------
+local MapLeft  = Tabs.Maps:AddLeftGroupbox('Load')
+local MapRight = Tabs.Maps:AddRightGroupbox('Manage')
+
+local function cloneCurrentMap()
+    local slot = #loadedMaps + 1
+    if slot > #MAP_SLOTS then
+        showToast('Max 3 maps loaded - clear one first')
+        return
+    end
+
+    local spawnX = MAP_SLOTS[slot].x
+    local spawnZ = MAP_SLOTS[slot].z
+
+    local charSet = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character then charSet[p.Character] = true end
+    end
+
+    showToast('Cloning map... may take a moment')
+    task.spawn(function()
+        local folder = Instance.new('Folder')
+        folder.Name  = 'ClonedMap_' .. slot
+
+        local partCount = 0
+        local objCount  = 0
+        for _, obj in ipairs(workspace:GetChildren()) do
+            if obj:IsA('Terrain') or obj:IsA('Camera') or charSet[obj] then continue end
+
+            local ok, clone = pcall(function() return obj:Clone() end)
+            if not ok or not clone then continue end
+
+            -- shift every BasePart inside the clone to the slot offset
+            for _, part in ipairs(clone:GetDescendants()) do
+                if part:IsA('BasePart') then
+                    part.CFrame     = part.CFrame + Vector3.new(spawnX, 0, spawnZ)
+                    part.Anchored   = true
+                    part.CanCollide = true
+                    partCount += 1
+                end
+            end
+            -- handle the case where the top-level clone is itself a BasePart
+            if clone:IsA('BasePart') then
+                clone.CFrame     = clone.CFrame + Vector3.new(spawnX, 0, spawnZ)
+                clone.Anchored   = true
+                clone.CanCollide = true
+                partCount += 1
+            end
+
+            clone.Parent = folder
+            objCount += 1
+        end
+
+        if objCount == 0 then
+            folder:Destroy()
+            showToast('Nothing to clone')
+            return
+        end
+
+        folder.Parent = workspace
+
+        -- copy terrain voxels from around the player to the slot offset.
+        -- ReadVoxels captures the actual terrain data; WriteVoxels stamps it
+        -- at the new location. done at resolution 4 (fine enough for riding on).
+        local terrainRegion = nil
+        pcall(function()
+            local hrpT = plr.Character and plr.Character:FindFirstChild('HumanoidRootPart')
+            if not hrpT then return end
+            local pos = hrpT.Position
+            local RANGE = 500
+            local RES   = 4
+            local function snap(v) return math.floor(v / RES) * RES end
+            local srcMin = Vector3.new(snap(pos.X - RANGE), snap(-150), snap(pos.Z - RANGE))
+            local srcMax = Vector3.new(snap(pos.X + RANGE), snap(600),  snap(pos.Z + RANGE))
+            local srcRgn = Region3.new(srcMin, srcMax)
+            local mats, occs = workspace.Terrain:ReadVoxels(srcRgn, RES)
+            local dstMin = Vector3.new(srcMin.X + spawnX, srcMin.Y, srcMin.Z + spawnZ)
+            local dstMax = Vector3.new(srcMax.X + spawnX, srcMax.Y, srcMax.Z + spawnZ)
+            local dstRgn = Region3.new(dstMin, dstMax)
+            workspace.Terrain:WriteVoxels(dstRgn, RES, mats, occs)
+            terrainRegion = dstRgn
+        end)
+
+        local gameName = 'Cloned Map ' .. slot
+        pcall(function()
+            local info = MPS:GetProductInfo(game.PlaceId)
+            if info and info.Name then gameName = info.Name end
+        end)
+
+        table.insert(loadedMaps, {obj = folder, name = gameName, x = spawnX, z = spawnZ, terrainRegion = terrainRegion})
+        lastMapPos = Vector3.new(spawnX, 20, spawnZ)
+        local terrainNote = terrainRegion and '  + terrain' or ''
+        showToast('Cloned ' .. partCount .. ' parts across ' .. objCount .. ' models' .. terrainNote .. '  ->  slot ' .. slot)
+    end)
+end
 
 MapLeft:AddButton({
-    Text = 'Teleport to Last Map',
+    Text = 'Clone Current Map',
     Func = function()
-        if not lastMapPos then showToast('No map loaded yet') return end
-        local char = plr.Character
-        local hrp  = char and char:FindFirstChild('HumanoidRootPart')
-        if not hrp then return end
-        hrp.CFrame = CFrame.new(lastMapPos)
-        showToast('Teleported')
-    end
+        if not PasswordGate.ask() then return end
+        cloneCurrentMap()
+    end,
 })
 
-MapRight:AddButton({
-    Text = 'Teleport to Map 1',
-    Func = function()
-        local entry = loadedMaps[1]
-        if not entry then showToast('No maps loaded') return end
-        local char = plr.Character
-        local hrp  = char and char:FindFirstChild('HumanoidRootPart')
-        if not hrp then return end
-        hrp.CFrame = CFrame.new(entry.x, 20, entry.z)
-        showToast('Teleported to ' .. entry.name)
-    end
-})
+-- everything below this line is only built in the target game
+if isTargetGame then
 
-MapRight:AddButton({
-    Text = 'Teleport to Map 2',
-    Func = function()
-        local entry = loadedMaps[2]
-        if not entry then showToast('Only ' .. #loadedMaps .. ' map(s) loaded') return end
-        local char = plr.Character
-        local hrp  = char and char:FindFirstChild('HumanoidRootPart')
-        if not hrp then return end
-        hrp.CFrame = CFrame.new(entry.x, 20, entry.z)
-        showToast('Teleported to ' .. entry.name)
-    end
-})
+    MapLeft:AddDivider()
 
+    MapLeft:AddInput('MapAssetId', {
+        Default  = '',
+        Numeric  = false,
+        Finished = false,
+        Text     = 'Asset ID  (or paste the full URL)',
+    })
+
+    MapLeft:AddButton({
+        Text = 'Load Map',
+        Func = function()
+            local raw = Options.MapAssetId.Value
+            if raw == '' then showToast('Enter an asset ID first') return end
+
+            local assetId = raw:match('%d+')
+            if not assetId then showToast('Could not read an ID from that') return end
+
+            local slot = #loadedMaps + 1
+            if slot > #MAP_SLOTS then
+                showToast('Max 3 maps loaded - clear one first')
+                return
+            end
+
+            showToast('Downloading map ' .. slot .. '  (' .. assetId .. ')...')
+            task.spawn(function()
+                local ok, objects = pcall(function()
+                    return game:GetObjects('rbxassetid://' .. assetId)
+                end)
+                if not ok or not objects or #objects == 0 then
+                    showToast('Load failed - check the ID')
+                    return
+                end
+
+                local spawnX = MAP_SLOTS[slot].x
+                local spawnZ = MAP_SLOTS[slot].z
+
+                local loaded = 0
+                for _, obj in ipairs(objects) do
+                    if obj:IsA('Model') or obj:IsA('BasePart') then
+                        pcall(function()
+                            if obj:IsA('Model') then
+                                local bbCF, bbSize = obj:GetBoundingBox()
+                                local bottomY   = bbCF.Position.Y - bbSize.Y / 2
+                                local pivotCF   = obj:GetPivot()
+                                local newPivotY = pivotCF.Position.Y + (2 - bottomY)
+                                obj:PivotTo(CFrame.new(spawnX, newPivotY, spawnZ))
+                            else
+                                obj.Position = Vector3.new(spawnX, obj.Size.Y / 2 + 2, spawnZ)
+                            end
+                        end)
+                        obj.Parent = workspace
+
+                        -- force every part to be anchored and collideable so the
+                        -- client-side bike physics actually land on the map
+                        for _, part in ipairs(obj:GetDescendants()) do
+                            if part:IsA('BasePart') then
+                                part.Anchored   = true
+                                part.CanCollide = true
+                            end
+                        end
+                        if obj:IsA('BasePart') then
+                            obj.Anchored   = true
+                            obj.CanCollide = true
+                        end
+
+                        local mapName = (obj.Name ~= '' and obj.Name) or ('Asset ' .. assetId)
+                        table.insert(loadedMaps, {obj = obj, name = mapName, x = spawnX, z = spawnZ})
+                        lastMapPos = Vector3.new(spawnX, 20, spawnZ)
+                        loaded += 1
+                    end
+                end
+
+                if loaded > 0 then
+                    showToast('Loaded: ' .. loadedMaps[#loadedMaps].name .. ' (#' .. #loadedMaps .. ')')
+                else
+                    showToast('Model had no geometry to load')
+                end
+            end)
+        end
+    })
+
+    MapLeft:AddDivider()
+
+    MapLeft:AddButton({
+        Text = 'Teleport to Last Map',
+        Func = function()
+            if #loadedMaps == 0 then showToast('No map loaded yet') return end
+            teleportOntoMap(loadedMaps[#loadedMaps])
+        end
+    })
+
+    MapLeft:AddDivider()
+
+    -- import a file that was exported from another game session.
+    -- the file lives in your executor's workspace folder under SuperMotoMaps/.
+    MapLeft:AddInput('ImportFilename', {
+        Default  = '',
+        Numeric  = false,
+        Finished = false,
+        Text     = 'Import filename (without .json)',
+    })
+
+    MapLeft:AddButton({
+        Text = 'Import from File',
+        Func = function()
+            if not PasswordGate.ask() then return end
+            if type(readfile) ~= 'function' then
+                showToast('Executor has no file-read support')
+                return
+            end
+            local name = Options.ImportFilename.Value
+            if name == '' then showToast('Enter a filename first') return end
+
+            local slot = #loadedMaps + 1
+            if slot > #MAP_SLOTS then
+                showToast('Max 3 maps loaded - clear one first')
+                return
+            end
+
+            local path = MAP_SAVE_FOLDER .. '/' .. name .. '.json'
+            local ok, content = pcall(readfile, path)
+            if not ok or not content or content == '' then
+                showToast('File not found: ' .. name .. '.json')
+                return
+            end
+            showToast('Importing...')
+            task.spawn(function() importMap(content, slot) end)
+        end
+    })
+
+    MapRight:AddButton({
+        Text = 'Teleport to Map 1',
+        Func = function()
+            local entry = loadedMaps[1]
+            if not entry then showToast('No maps loaded') return end
+            teleportOntoMap(entry)
+        end
+    })
+
+    MapRight:AddButton({
+        Text = 'Teleport to Map 2',
+        Func = function()
+            local entry = loadedMaps[2]
+            if not entry then showToast('Only ' .. #loadedMaps .. ' map(s) loaded') return end
+            teleportOntoMap(entry)
+        end
+    })
+
+    MapRight:AddButton({
+        Text = 'Teleport to Map 3',
+        Func = function()
+            local entry = loadedMaps[3]
+            if not entry then showToast('Only ' .. #loadedMaps .. ' map(s) loaded') return end
+            teleportOntoMap(entry)
+        end
+    })
+
+    MapRight:AddDivider()
+
+end  -- isTargetGame
+
+-- Export + cleanup available in every game
 MapRight:AddButton({
-    Text = 'Teleport to Map 3',
+    Text = 'Export Last Map',
     Func = function()
-        local entry = loadedMaps[3]
-        if not entry then showToast('Only ' .. #loadedMaps .. ' map(s) loaded') return end
-        local char = plr.Character
-        local hrp  = char and char:FindFirstChild('HumanoidRootPart')
-        if not hrp then return end
-        hrp.CFrame = CFrame.new(entry.x, 20, entry.z)
-        showToast('Teleported to ' .. entry.name)
+        if not PasswordGate.ask() then return end
+        if #loadedMaps == 0 then showToast('No maps loaded') return end
+        task.spawn(function() exportMap(loadedMaps[#loadedMaps]) end)
     end
 })
 
 MapRight:AddDivider()
+
+local function clearMapEntry(entry)
+    pcall(function() entry.obj:Destroy() end)
+    if entry.terrainRegion then
+        pcall(function()
+            workspace.Terrain:FillBlock(
+                CFrame.new(entry.terrainRegion.CFrame.Position),
+                entry.terrainRegion.Size,
+                Enum.Material.Air
+            )
+        end)
+    end
+end
 
 MapRight:AddButton({
     Text = 'Remove Last Map',
     Func = function()
         if #loadedMaps == 0 then showToast('No maps to remove') return end
         local entry = table.remove(loadedMaps)
-        pcall(function() entry.obj:Destroy() end)
+        clearMapEntry(entry)
         lastMapPos = loadedMaps[#loadedMaps] and Vector3.new(loadedMaps[#loadedMaps].x, 20, loadedMaps[#loadedMaps].z) or nil
         showToast('Removed: ' .. entry.name)
     end
@@ -684,7 +1388,7 @@ MapRight:AddButton({
     Text = 'Clear All Maps',
     Func = function()
         for _, entry in ipairs(loadedMaps) do
-            pcall(function() entry.obj:Destroy() end)
+            clearMapEntry(entry)
         end
         loadedMaps = {}
         lastMapPos = nil
@@ -1769,7 +2473,7 @@ _G.SMCleanup = function()
     _G.FlingStop = true
 
     -- disconnect all RunService connections
-    for _, key in ipairs({'SpeedConn', 'BrakeConn', 'HitboxConn',
+    for _, key in ipairs({'SpeedConn', 'BrakeConn', 'TurnConn', 'HitboxConn',
                           'AntiAdminConn', 'OptimizerConn'}) do
         if _G[key] then
             pcall(function() _G[key]:Disconnect() end)
@@ -1786,9 +2490,9 @@ _G.SMCleanup = function()
         pcall(function() if wp.topPart  then wp.topPart:Destroy()  end end)
     end
 
-    -- destroy all custom-loaded map models
+    -- destroy all custom-loaded map models and wipe their terrain
     for _, entry in ipairs(loadedMaps) do
-        pcall(function() entry.obj:Destroy() end)
+        pcall(function() clearMapEntry(entry) end)
     end
 
     -- clear hitbox selection boxes
