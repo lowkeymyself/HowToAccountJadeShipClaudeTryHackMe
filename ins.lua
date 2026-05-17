@@ -54,16 +54,28 @@ subBtn.TextSize = 14
 subBtn.Parent = frame
 
 local allBtn = Instance.new("TextButton")
-allBtn.Size = UDim2.new(1, -16, 0, 32)
+allBtn.Size = UDim2.new(0.5, -12, 0, 32)
 allBtn.Position = UDim2.new(0, 8, 0, 84)
 allBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
 allBtn.BorderSizePixel = 1
 allBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
-allBtn.Text = "GET ALL BIKES"
+allBtn.Text = "GET ALL"
 allBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
 allBtn.Font = Enum.Font.GothamBold
 allBtn.TextSize = 14
 allBtn.Parent = frame
+
+local sellAllBtn = Instance.new("TextButton")
+sellAllBtn.Size = UDim2.new(0.5, -12, 0, 32)
+sellAllBtn.Position = UDim2.new(0.5, 4, 0, 84)
+sellAllBtn.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+sellAllBtn.BorderSizePixel = 1
+sellAllBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
+sellAllBtn.Text = "SELL ALL"
+sellAllBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+sellAllBtn.Font = Enum.Font.GothamBold
+sellAllBtn.TextSize = 14
+sellAllBtn.Parent = frame
 
 local hint = Instance.new("TextLabel")
 hint.Size = UDim2.new(1, 0, 0, 16)
@@ -98,14 +110,28 @@ allBtn.MouseButton1Click:Connect(function()
     allBtn.Text = "WORKING..."
     allBtn.Active = false
     local bikes = RS.Bikes:GetChildren()
-    for i, bike in ipairs(bikes) do
+    for _, bike in ipairs(bikes) do
         fireBike(bike.Name, 0)
         task.wait(0.1)
     end
     allBtn.Text = "DONE (" .. #bikes .. ")"
     task.wait(2)
-    allBtn.Text = "GET ALL BIKES"
+    allBtn.Text = "GET ALL"
     allBtn.Active = true
+end)
+
+sellAllBtn.MouseButton1Click:Connect(function()
+    sellAllBtn.Text = "WORKING..."
+    sellAllBtn.Active = false
+    local bikes = RS.Bikes:GetChildren()
+    for _, bike in ipairs(bikes) do
+        RS.Remotes.SellBike:FireServer(bike.Name)
+        task.wait(0.1)
+    end
+    sellAllBtn.Text = "DONE (" .. #bikes .. ")"
+    task.wait(2)
+    sellAllBtn.Text = "SELL ALL"
+    sellAllBtn.Active = true
 end)
 
 -- drag
