@@ -2374,6 +2374,10 @@ local _rideoutHudGui    = nil
 local _selfLeaderBox    = nil  -- yellow SelectionBox on own character (Claim Ownership)
 local _ownershipActive  = false
 local _ownershipHudGui  = nil  -- top-of-screen rider count banner
+local _fullMapGui       = nil  -- full map ScreenGui
+local _fullMapDoScan    = nil  -- forward declared, assigned in panel do-block
+local _fmOriginX        = 0
+local _fmOriginZ        = 0
 
 -- rideout waypoint state
 local rideoutWPs      = {}
@@ -3041,6 +3045,56 @@ RideoutRight:AddButton({
 
 RideoutRight:AddDivider()
 
+RideoutRight:AddToggle('FullMapToggle', {
+    Text    = 'Full Map  (Z = show/hide)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            if not _fullMapGui then showToast('Loading...'); return end
+            _fullMapGui.Enabled = true
+            if _fullMapDoScan then _fullMapDoScan() end
+            _G.FullMapKeyConn = UIS.InputBegan:Connect(function(inp, gp)
+                if gp then return end
+                if inp.KeyCode == Enum.KeyCode.Z then
+                    if _fullMapGui then
+                        _fullMapGui.Enabled = not _fullMapGui.Enabled
+                    end
+                end
+            end)
+            showToast('Full Map ON  (Z to toggle)')
+        else
+            if _fullMapGui then _fullMapGui.Enabled = false end
+            if _G.FullMapKeyConn then _G.FullMapKeyConn:Disconnect(); _G.FullMapKeyConn = nil end
+            showToast('Full Map OFF')
+        end
+    end
+})
+
+RideoutRight:AddButton({
+    Text = 'Scan at My Position',
+    Func = function()
+        local myChar = plr.Character
+        local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
+        if not myHRP then showToast('Get in-game first'); return end
+        _fmOriginX = myHRP.Position.X
+        _fmOriginZ = myHRP.Position.Z
+        if _fullMapDoScan then _fullMapDoScan() end
+        showToast('Scanning from your position...')
+    end
+})
+
+RideoutRight:AddButton({
+    Text = 'Rescan (world center)',
+    Func = function()
+        _fmOriginX = 0
+        _fmOriginZ = 0
+        if _fullMapDoScan then _fullMapDoScan() end
+        showToast('Rescanning from world center...')
+    end
+})
+
+RideoutRight:AddDivider()
+
 -- auto-refresh leader ESP when leader respawns (character changed)
 do
     local RS2 = game:GetService('RunService')
@@ -3058,6 +3112,331 @@ do
                     end
                 end)
             end
+        end
+    end)
+end
+
+-- ============================================================
+-- RIDEOUT FULL MAP PANEL
+-- ============================================================
+do
+    local FM_GRID    = 64
+    local FM_CELL_PX = 10
+    local FM_CANVAS  = FM_GRID * FM_CELL_PX   -- 640px
+    local FM_HALF    = 4000                    -- 8000 studs total coverage
+    local FM_CELL_W  = (FM_HALF * 2) / FM_GRID -- 125 studs per cell
+
+    local FM_COLORS = {
+        [Enum.Material.Grass]         = Color3.fromRGB(106, 127,  63),
+        [Enum.Material.LeafyGrass]    = Color3.fromRGB( 90, 130,  50),
+        [Enum.Material.Ground]        = Color3.fromRGB(100,  90,  60),
+        [Enum.Material.Mud]           = Color3.fromRGB(100,  75,  50),
+        [Enum.Material.Water]         = Color3.fromRGB( 40, 100, 200),
+        [Enum.Material.Rock]          = Color3.fromRGB(115, 115, 115),
+        [Enum.Material.Sand]          = Color3.fromRGB(198, 189, 122),
+        [Enum.Material.Snow]          = Color3.fromRGB(220, 230, 240),
+        [Enum.Material.Asphalt]       = Color3.fromRGB( 50,  50,  50),
+        [Enum.Material.Concrete]      = Color3.fromRGB(120, 120, 120),
+        [Enum.Material.SmoothPlastic] = Color3.fromRGB( 85,  85,  85),
+        [Enum.Material.Metal]         = Color3.fromRGB(140, 145, 155),
+        [Enum.Material.Wood]          = Color3.fromRGB(139,  90,  43),
+        [Enum.Material.Ice]           = Color3.fromRGB(180, 210, 240),
+        [Enum.Material.Cobblestone]   = Color3.fromRGB( 95,  90,  80),
+        [Enum.Material.WoodPlanks]    = Color3.fromRGB(150, 100,  55),
+        [Enum.Material.Pavement]      = Color3.fromRGB( 70,  70,  70),
+    }
+
+    local TITLE_H = 34
+    local WIN_W   = FM_CANVAS + 2
+    local WIN_H   = FM_CANVAS + TITLE_H + 2
+
+    local _fmCanvas    = nil
+    local _fmDotLayer  = nil
+    local _fmStatusLbl = nil
+    local _fmScanTask  = nil
+    local _fmDots      = {}
+    local _fmScanned   = false
+
+    local function _fmWorldToCanvas(wx, wz)
+        local px = (wx - (_fmOriginX - FM_HALF)) / (FM_HALF * 2) * FM_CANVAS
+        local pz = (wz - (_fmOriginZ - FM_HALF)) / (FM_HALF * 2) * FM_CANVAS
+        return math.clamp(math.floor(px + 0.5), 0, FM_CANVAS - 1),
+               math.clamp(math.floor(pz + 0.5), 0, FM_CANVAS - 1)
+    end
+
+    local function doScan()
+        if _fmScanTask then
+            task.cancel(_fmScanTask)
+            _fmScanTask = nil
+        end
+        _fmScanned = false
+        -- clear existing terrain pixels
+        if _fmCanvas then
+            for _, child in ipairs(_fmCanvas:GetChildren()) do
+                if child.Name == 'FMPx' then child:Destroy() end
+            end
+        end
+        if _fmStatusLbl then _fmStatusLbl.Text = 'Scanning  0%' end
+
+        _fmScanTask = task.spawn(function()
+            for row = 0, FM_GRID - 1 do
+                for col = 0, FM_GRID - 1 do
+                    local wx = _fmOriginX - FM_HALF + (col + 0.5) * FM_CELL_W
+                    local wz = _fmOriginZ - FM_HALF + (row + 0.5) * FM_CELL_W
+                    local result = workspace:Raycast(
+                        Vector3.new(wx, 800, wz),
+                        Vector3.new(0, -900, 0)
+                    )
+                    local color
+                    if result then
+                        color = FM_COLORS[result.Instance.Material]
+                        if not color then
+                            local pc = result.Instance.Color
+                            color = Color3.new(pc.R * 0.65, pc.G * 0.65, pc.B * 0.65)
+                        end
+                    else
+                        color = Color3.fromRGB(10, 12, 20)
+                    end
+                    if _fmCanvas and _fmCanvas.Parent then
+                        local px = Instance.new('Frame')
+                        px.Name             = 'FMPx'
+                        px.Size             = UDim2.new(0, FM_CELL_PX, 0, FM_CELL_PX)
+                        px.Position         = UDim2.new(0, col * FM_CELL_PX, 0, row * FM_CELL_PX)
+                        px.BackgroundColor3 = color
+                        px.BorderSizePixel  = 0
+                        px.ZIndex           = 21
+                        px.Parent           = _fmCanvas
+                    end
+                end
+                if _fmStatusLbl and _fmStatusLbl.Parent then
+                    local pct = math.floor((row + 1) / FM_GRID * 100 + 0.5)
+                    _fmStatusLbl.Text = 'Scanning  ' .. pct .. '%'
+                end
+                task.wait()
+            end
+            if _fmStatusLbl and _fmStatusLbl.Parent then
+                _fmStatusLbl.Text = 'Map ready'
+            end
+            _fmScanned = true
+            _fmScanTask = nil
+        end)
+    end
+
+    -- assign the outer-scope forward ref so the toggle button can call it
+    _fullMapDoScan = doScan
+
+    -- build ScreenGui
+    local fmg = Instance.new('ScreenGui')
+    fmg.Name           = 'FullMapGui'
+    fmg.ResetOnSpawn   = false
+    fmg.DisplayOrder   = 205
+    fmg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    fmg.Enabled        = false
+    fmg.Parent         = plr.PlayerGui
+    _fullMapGui        = fmg
+
+    local win = Instance.new('Frame')
+    win.Size             = UDim2.new(0, WIN_W, 0, WIN_H)
+    win.Position         = UDim2.new(0.5, -WIN_W/2, 0.5, -WIN_H/2)
+    win.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+    win.BorderSizePixel  = 1
+    win.BorderColor3     = Color3.fromRGB(45, 45, 45)
+    win.Active           = true
+    win.ZIndex           = 20
+    win.Parent           = fmg
+
+    -- title bar
+    local tbar = Instance.new('Frame')
+    tbar.Size             = UDim2.new(1, 0, 0, TITLE_H)
+    tbar.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+    tbar.BorderSizePixel  = 0
+    tbar.ZIndex           = 21
+    tbar.Parent           = win
+
+    local tbarAccent = Instance.new('Frame')
+    tbarAccent.Size             = UDim2.new(1, 0, 0, 2)
+    tbarAccent.Position         = UDim2.new(0, 0, 1, -2)
+    tbarAccent.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
+    tbarAccent.BorderSizePixel  = 0
+    tbarAccent.ZIndex           = 22
+    tbarAccent.Parent           = tbar
+
+    local tLbl = Instance.new('TextLabel')
+    tLbl.Size                   = UDim2.new(1, -200, 1, 0)
+    tLbl.Position               = UDim2.new(0, 8, 0, 0)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text                   = 'Full Map  |  Z: toggle'
+    tLbl.TextColor3             = Color3.fromRGB(220, 220, 220)
+    tLbl.Font                   = Enum.Font.GothamBold
+    tLbl.TextSize               = 13
+    tLbl.TextXAlignment         = Enum.TextXAlignment.Left
+    tLbl.ZIndex                 = 22
+    tLbl.Parent                 = tbar
+
+    local stLbl = Instance.new('TextLabel')
+    stLbl.Size                   = UDim2.new(0, 140, 1, 0)
+    stLbl.Position               = UDim2.new(1, -174, 0, 0)
+    stLbl.BackgroundTransparency = 1
+    stLbl.Text                   = 'Not scanned'
+    stLbl.TextColor3             = Color3.fromRGB(120, 120, 120)
+    stLbl.Font                   = Enum.Font.Gotham
+    stLbl.TextSize               = 12
+    stLbl.TextXAlignment         = Enum.TextXAlignment.Right
+    stLbl.ZIndex                 = 22
+    stLbl.Parent                 = tbar
+    _fmStatusLbl                 = stLbl
+
+    local fmClose = Instance.new('TextButton')
+    fmClose.Size             = UDim2.new(0, 32, 1, 0)
+    fmClose.Position         = UDim2.new(1, -32, 0, 0)
+    fmClose.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+    fmClose.BorderSizePixel  = 0
+    fmClose.Text             = 'X'
+    fmClose.TextColor3       = Color3.fromRGB(240, 240, 240)
+    fmClose.Font             = Enum.Font.GothamBold
+    fmClose.TextSize         = 13
+    fmClose.ZIndex           = 22
+    fmClose.Parent           = tbar
+    fmClose.MouseButton1Click:Connect(function() fmg.Enabled = false end)
+
+    -- drag title bar
+    do
+        local drag, dragStart, startPos = false, nil, nil
+        tbar.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                drag = true; dragStart = inp.Position; startPos = win.Position
+            end
+        end)
+        tbar.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+        end)
+        game:GetService('UserInputService').InputChanged:Connect(function(inp)
+            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                local d = inp.Position - dragStart
+                win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                         startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+    end
+
+    -- map viewport (clips terrain + dots to FM_CANVAS x FM_CANVAS)
+    local viewport = Instance.new('Frame')
+    viewport.Size             = UDim2.new(0, FM_CANVAS, 0, FM_CANVAS)
+    viewport.Position         = UDim2.new(0, 1, 0, TITLE_H)
+    viewport.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
+    viewport.BorderSizePixel  = 0
+    viewport.ClipsDescendants = true
+    viewport.ZIndex           = 20
+    viewport.Parent           = win
+
+    -- terrain canvas (child of viewport; terrain pixels placed here)
+    local canvas = Instance.new('Frame')
+    canvas.Size                  = UDim2.new(0, FM_CANVAS, 0, FM_CANVAS)
+    canvas.BackgroundTransparency = 1
+    canvas.ZIndex                = 21
+    canvas.Parent                = viewport
+    _fmCanvas                    = canvas
+
+    -- dot layer above terrain
+    local dotLayer = Instance.new('Frame')
+    dotLayer.Size                  = UDim2.new(0, FM_CANVAS, 0, FM_CANVAS)
+    dotLayer.BackgroundTransparency = 1
+    dotLayer.ZIndex                = 25
+    dotLayer.Parent                = viewport
+    _fmDotLayer                    = dotLayer
+
+    -- compass / north indicator (top-right corner of viewport)
+    local northLbl = Instance.new('TextLabel')
+    northLbl.Size                   = UDim2.new(0, 24, 0, 18)
+    northLbl.Position               = UDim2.new(1, -26, 0, 4)
+    northLbl.BackgroundColor3       = Color3.fromRGB(0, 0, 0)
+    northLbl.BackgroundTransparency = 0.4
+    northLbl.BorderSizePixel        = 0
+    northLbl.Text                   = 'N'
+    northLbl.TextColor3             = Color3.fromRGB(255, 80, 80)
+    northLbl.Font                   = Enum.Font.GothamBold
+    northLbl.TextSize               = 13
+    northLbl.ZIndex                 = 30
+    northLbl.Parent                 = viewport
+
+    -- scale bar (bottom-left)
+    local scaleLbl = Instance.new('TextLabel')
+    scaleLbl.Size                   = UDim2.new(0, 120, 0, 14)
+    scaleLbl.Position               = UDim2.new(0, 4, 1, -16)
+    scaleLbl.BackgroundColor3       = Color3.fromRGB(0, 0, 0)
+    scaleLbl.BackgroundTransparency = 0.5
+    scaleLbl.BorderSizePixel        = 0
+    scaleLbl.Text                   = '1 cell = ' .. FM_CELL_W .. ' studs'
+    scaleLbl.TextColor3             = Color3.fromRGB(160, 160, 160)
+    scaleLbl.Font                   = Enum.Font.Gotham
+    scaleLbl.TextSize               = 10
+    scaleLbl.ZIndex                 = 30
+    scaleLbl.Parent                 = viewport
+
+    -- player dots -- updated every ~6 frames
+    local _fmDotFrame = 0
+    local function getOrMakeDot(uid, isSelf, isLeader)
+        if _fmDots[uid] then return _fmDots[uid] end
+        local dotSize = isSelf and 10 or 7
+        local dotColor
+        if isSelf then
+            dotColor = Color3.fromRGB(255, 210, 0)   -- yellow = self
+        elseif isLeader then
+            dotColor = Color3.fromRGB(50, 255, 80)   -- green = rideout leader
+        else
+            dotColor = Color3.fromRGB(220, 80, 80)   -- red = other players
+        end
+
+        local dot = Instance.new('Frame')
+        dot.Size             = UDim2.new(0, dotSize, 0, dotSize)
+        dot.AnchorPoint      = Vector2.new(0.5, 0.5)
+        dot.BackgroundColor3 = dotColor
+        dot.BorderSizePixel  = 1
+        dot.BorderColor3     = Color3.fromRGB(0, 0, 0)
+        dot.ZIndex           = 26
+        dot.Parent           = _fmDotLayer
+
+        local nameLbl = Instance.new('TextLabel')
+        nameLbl.Size                   = UDim2.new(0, 70, 0, 11)
+        nameLbl.AnchorPoint            = Vector2.new(0.5, 1)
+        nameLbl.Position               = UDim2.new(0.5, 0, 0, -1)
+        nameLbl.BackgroundTransparency = 1
+        nameLbl.TextColor3             = dotColor
+        nameLbl.Font                   = Enum.Font.Gotham
+        nameLbl.TextSize               = 9
+        nameLbl.TextStrokeTransparency = 0.4
+        nameLbl.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
+        nameLbl.ZIndex                 = 27
+        nameLbl.Parent                 = dot
+        _fmDots[uid] = dot
+        return dot
+    end
+
+    local RS2 = game:GetService('RunService')
+    _G.FullMapDotConn = RS2.Heartbeat:Connect(function()
+        if not fmg.Enabled then return end
+        _fmDotFrame += 1
+        if _fmDotFrame < 6 then return end
+        _fmDotFrame = 0
+
+        local seen = {}
+        for _, p in ipairs(Players:GetPlayers()) do
+            local c = p.Character
+            local h = c and c:FindFirstChild('HumanoidRootPart')
+            if not h then continue end
+            local isSelf   = (p == plr)
+            local isLeader = (_rideoutLeader ~= nil and p == _rideoutLeader)
+            local dot = getOrMakeDot(p.UserId, isSelf, isLeader)
+            local px, pz = _fmWorldToCanvas(h.Position.X, h.Position.Z)
+            dot.Position = UDim2.new(0, px, 0, pz)
+            local lbl = dot:FindFirstChildWhichIsA('TextLabel')
+            if lbl then lbl.Text = isSelf and 'You' or p.Name end
+            dot.Visible  = true
+            seen[p.UserId] = true
+        end
+        -- hide dots for players no longer in the server
+        for uid, dot in pairs(_fmDots) do
+            if not seen[uid] then dot.Visible = false end
         end
     end)
 end
@@ -4789,7 +5168,8 @@ _G.SMCleanup = function()
                           'AdminESPConn', 'BikeESPConn', 'SpeedTagConn', 'SpeedTagLeaveConn',
                           'JumpKeyConn',
                           'RideoutLeaderConn', 'RideoutFollowConn', 'RideoutHUDConn',
-                          'RideoutWPUpdateConn', 'OwnershipConn'}) do
+                          'RideoutWPUpdateConn', 'OwnershipConn',
+                          'FullMapKeyConn', 'FullMapDotConn'}) do
         if _G[key] then
             pcall(function() _G[key]:Disconnect() end)
             _G[key] = nil
@@ -4830,6 +5210,7 @@ _G.SMCleanup = function()
     pcall(_clearRideoutWPs)
     pcall(function() if _rideoutHudGui    then _rideoutHudGui:Destroy()    end end)
     pcall(function() if _ownershipHudGui  then _ownershipHudGui:Destroy()  end end)
+    pcall(function() if _fullMapGui       then _fullMapGui:Destroy()       end end)
     pcall(function() if rideoutWpGui      then rideoutWpGui:Destroy()      end end)
     pcall(function() if _G.RideoutTrailA0 then _G.RideoutTrailA0:Destroy() end end)
     pcall(function() if _G.RideoutTrailA1 then _G.RideoutTrailA1:Destroy() end end)
