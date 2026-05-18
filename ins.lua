@@ -30,7 +30,6 @@ local Window = Library:CreateWindow({
 local Tabs = {
     Main     = Window:AddTab('Main'),
     Troll    = Window:AddTab('Troll'),
-    Rideout  = Window:AddTab('Rideout'),
     Maps     = Window:AddTab('Maps'),
     ESP      = Window:AddTab('ESP'),
     Settings = Window:AddTab('Settings')
@@ -776,28 +775,29 @@ Right:AddToggle('FlyMode', {
     Default = false,
     Callback = function(val)
         if val then
-            local RS2 = game:GetService('RunService')
-            local flyRoot = nil
-            _G.FlyConn = RS2.Heartbeat:Connect(function()
-                local _, r = getBikeRoot()
-                if r then flyRoot = r end
-                if not flyRoot or not flyRoot.Parent then return end
+            _G.FlyConn = RunService.Heartbeat:Connect(function()
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not seat then return end
                 local cam   = workspace.CurrentCamera
                 local speed = (tonumber(Options.FlySpeedInput.Value) or 60) * 1.6
-                local fwd   = cam.CFrame.LookVector
+                local fwd   = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+                if fwd.Magnitude > 0.001 then fwd = fwd.Unit end
                 local right = cam.CFrame.RightVector
                 local dir   = Vector3.new(0, 0, 0)
-                if UIS:IsKeyDown(Enum.KeyCode.W)         then dir = dir + fwd                end
-                if UIS:IsKeyDown(Enum.KeyCode.S)         then dir = dir - fwd                end
-                if UIS:IsKeyDown(Enum.KeyCode.A)         then dir = dir - right              end
-                if UIS:IsKeyDown(Enum.KeyCode.D)         then dir = dir + right              end
-                if UIS:IsKeyDown(Enum.KeyCode.E)         then dir = dir + Vector3.new(0,1,0) end
-                if UIS:IsKeyDown(Enum.KeyCode.Q)         then dir = dir - Vector3.new(0,1,0) end
+                if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + fwd                end
+                if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - fwd                end
+                if UIS:IsKeyDown(Enum.KeyCode.A) then dir = dir - right              end
+                if UIS:IsKeyDown(Enum.KeyCode.D) then dir = dir + right              end
+                if UIS:IsKeyDown(Enum.KeyCode.E) then dir = dir + Vector3.new(0,1,0) end
+                if UIS:IsKeyDown(Enum.KeyCode.Q) then dir = dir - Vector3.new(0,1,0) end
                 if dir.Magnitude > 0.01 then
-                    flyRoot.AssemblyLinearVelocity = dir.Unit * speed
+                    seat.AssemblyLinearVelocity = dir.Unit * speed
                 else
-                    local vel = flyRoot.AssemblyLinearVelocity
-                    flyRoot.AssemblyLinearVelocity = Vector3.new(vel.X * 0.8, 0, vel.Z * 0.8)
+                    local vel = seat.AssemblyLinearVelocity
+                    seat.AssemblyLinearVelocity = vel * 0.82
                 end
             end)
             showToast('Fly ON  (WASD move, E up, Q down)')
@@ -810,21 +810,31 @@ Right:AddToggle('FlyMode', {
 
 -- ---- Anti-Fall ---------------------------------------------------------
 Right:AddToggle('AntiFall', {
-    Text = 'Anti-Fall  (WHEELIE IS BROKEN)',
+    Text = 'Anti-Fall',
     Default = false,
     Callback = function(val)
         if val then
-            local RS2 = game:GetService('RunService')
-            local afRoot = nil
-            _G.AntiFallConn = RS2.Heartbeat:Connect(function()
-                afRoot = cachedRoot(afRoot)
-                if not afRoot then return end
-                local cf  = afRoot.CFrame
-                local lv  = cf.LookVector
-                local yaw = math.atan2(-lv.X, -lv.Z)
-                afRoot.CFrame = CFrame.new(cf.Position) * CFrame.Angles(0, yaw, 0)
+            _G.AntiFallConn = RunService.Heartbeat:Connect(function()
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not seat then return end
+                local cf = seat.CFrame
+                -- rv.Y = sine of roll angle: 0 when upright, ±1 when fully tipped sideways
+                local roll = cf.RightVector.Y
+                if math.abs(roll) < 0.06 then return end  -- dead zone (~3 deg), don't touch physics
+                -- rebuild CFrame preserving LookVector (carries yaw + pitch), zero roll only
+                local lv    = cf.LookVector
+                local right = lv:Cross(Vector3.new(0, 1, 0))
+                if right.Magnitude < 0.05 then return end  -- near-vertical edge case
+                right = right.Unit
+                local newUp = right:Cross(lv).Unit
+                -- proportional lerp: gentle when barely tilted, stronger as bike tips
+                local alpha = math.clamp(math.abs(roll) * 0.4, 0.03, 0.22)
+                seat.CFrame = cf:Lerp(CFrame.fromMatrix(cf.Position, right, newUp), alpha)
             end)
-            showToast('Anti-Fall ON  (wheelies disabled)')
+            showToast('Anti-Fall ON')
         else
             if _G.AntiFallConn then _G.AntiFallConn:Disconnect(); _G.AntiFallConn = nil end
             showToast('Anti-Fall OFF')
@@ -866,47 +876,6 @@ _G.JumpKeyConn = UIS.InputBegan:Connect(function(inp, gp)
     local vel   = bikeRoot.AssemblyLinearVelocity
     bikeRoot.AssemblyLinearVelocity = Vector3.new(vel.X, vel.Y + force, vel.Z)
 end)
-
-Right:AddDivider()
-
--- ---- Air Control -------------------------------------------------------
-Right:AddInput('AirControlInput', {
-    Default = '40',
-    Numeric = true,
-    Finished = false,
-    Text = 'Air Control Force',
-})
-
-Right:AddToggle('AirControl', {
-    Text = 'Air Control (A/D mid-air)',
-    Default = false,
-    Callback = function(val)
-        if val then
-            local RS2 = game:GetService('RunService')
-            local airRoot = nil
-            _G.AirConn = RS2.Heartbeat:Connect(function(dt)
-                airRoot = cachedRoot(airRoot)
-                if not airRoot then return end
-                local aDown = UIS:IsKeyDown(Enum.KeyCode.A)
-                local dDown = UIS:IsKeyDown(Enum.KeyCode.D)
-                if not aDown and not dDown then return end
-                local hit = workspace:Raycast(airRoot.Position, Vector3.new(0, -4, 0))
-                if hit then return end
-                local force    = tonumber(Options.AirControlInput.Value) or 40
-                local rightVec = airRoot.CFrame.RightVector
-                rightVec = Vector3.new(rightVec.X, 0, rightVec.Z)
-                if rightVec.Magnitude < 0.01 then return end
-                rightVec = rightVec.Unit
-                local dir = aDown and -1 or 1
-                airRoot.AssemblyLinearVelocity = airRoot.AssemblyLinearVelocity + rightVec * dir * force * dt
-            end)
-            showToast('Air Control ON')
-        else
-            if _G.AirConn then _G.AirConn:Disconnect(); _G.AirConn = nil end
-            showToast('Air Control OFF')
-        end
-    end
-})
 
 Right:AddDivider()
 
@@ -2358,1428 +2327,89 @@ ESPLeft:AddToggle('SpeedNametags', {
     end
 })
 
--- ============================================================
--- RIDEOUT TAB
--- ============================================================
+ESPLeft:AddDivider()
 
-local RideoutLeft  = Tabs.Rideout:AddLeftGroupbox('Rideout')
-local RideoutRight = Tabs.Rideout:AddRightGroupbox('Leader')
+-- ---- Player ESP ---------------------------------------------------------
+local playerESPMap = {}
 
--- rideout state
-local _rideoutActive    = false
-local _rideoutLeader    = nil
-local _leaderBox        = nil
-local _leaderBill       = nil
-local _rideoutHudGui    = nil
-local _selfLeaderBox    = nil  -- yellow SelectionBox on own character (Claim Ownership)
-local _ownershipActive  = false
-local _ownershipHudGui  = nil  -- top-of-screen rider count banner
-local _fullMapGui       = nil  -- full map ScreenGui
-local _fullMapDoScan    = nil  -- forward declared, assigned in panel do-block
-local _fmOriginX        = 0
-local _fmOriginZ        = 0
-
--- rideout waypoint state
-local rideoutWPs      = {}
-local nextRoWpId      = 1
-local rideoutWpGui    = nil  -- list panel, assigned after tab buttons
-local _addRoWpRow     = nil  -- forward declaration
-local _reflowRoWpRows = nil  -- forward declaration
-
-local function _parseXYZ(str)
-    -- accepts:  "100, 50, 200"  or  "CFrame.new(100, 50, 200, ...)"
-    local nums = {}
-    for n in str:gmatch('%-?%d+%.?%d*') do
-        table.insert(nums, tonumber(n))
-        if #nums == 3 then break end
+local function clearPlayerESP()
+    for _, data in pairs(playerESPMap) do
+        pcall(function() if data.box  then data.box:Destroy()  end end)
+        pcall(function() if data.bill then data.bill:Destroy() end end)
     end
-    if #nums == 3 then return nums[1], nums[2], nums[3] end
-    return nil
+    playerESPMap = {}
 end
 
-local function _makeRideoutWP(name, wx, wy, wz)
-    local id = nextRoWpId
-    nextRoWpId += 1
-
-    local beamPart = Instance.new('Part')
-    beamPart.Size         = Vector3.new(0.6, 500, 0.6)
-    beamPart.CFrame       = CFrame.new(wx, wy + 250, wz)
-    beamPart.Anchored     = true
-    beamPart.CanCollide   = false
-    beamPart.Material     = Enum.Material.Neon
-    beamPart.Color        = Color3.fromRGB(50, 255, 80)
-    beamPart.Transparency = 0.35
-    beamPart.CastShadow   = false
-    beamPart.Parent       = workspace
-
-    local topPart = Instance.new('Part')
-    topPart.Size        = Vector3.new(1, 1, 1)
-    topPart.CFrame      = CFrame.new(wx, wy + 515, wz)
-    topPart.Anchored    = true
-    topPart.CanCollide  = false
-    topPart.Transparency = 1
-    topPart.Parent      = workspace
-
-    local billboard = Instance.new('BillboardGui')
-    billboard.Size        = UDim2.new(0, 280, 0, 80)
-    billboard.AlwaysOnTop = false
-    billboard.MaxDistance = 6000
-    billboard.Parent      = topPart
-
-    local bbName = Instance.new('TextLabel')
-    bbName.Size                   = UDim2.new(1, 0, 0.6, 0)
-    bbName.BackgroundTransparency = 1
-    bbName.Text                   = name
-    bbName.TextColor3             = Color3.fromRGB(50, 255, 80)
-    bbName.Font                   = Enum.Font.GothamBold
-    bbName.TextSize               = 30
-    bbName.TextScaled             = false
-    bbName.TextStrokeTransparency = 0.25
-    bbName.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
-    bbName.Parent                 = billboard
-
-    local bbDist = Instance.new('TextLabel')
-    bbDist.Size                   = UDim2.new(1, 0, 0.4, 0)
-    bbDist.Position               = UDim2.new(0, 0, 0.6, 0)
-    bbDist.BackgroundTransparency = 1
-    bbDist.TextColor3             = Color3.fromRGB(160, 255, 160)
-    bbDist.Font                   = Enum.Font.Gotham
-    bbDist.TextSize               = 20
-    bbDist.TextStrokeTransparency = 0.3
-    bbDist.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
-    bbDist.Parent                 = billboard
-
-    local wp = {id=id, name=name, x=wx, y=wy, z=wz,
-                beamPart=beamPart, topPart=topPart,
-                bbName=bbName, bbDist=bbDist, row=nil}
-    rideoutWPs[id] = wp
-
-    -- distance label updater (shared heartbeat)
-    if not _G.RideoutWPUpdateConn then
-        local RS2 = game:GetService('RunService')
-        _G.RideoutWPUpdateConn = RS2.Heartbeat:Connect(function()
-            local myChar = plr.Character
-            local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
-            for _, w in pairs(rideoutWPs) do
-                if w.bbDist and w.bbDist.Parent then
-                    if myHRP then
-                        local d = math.floor((myHRP.Position - Vector3.new(w.x, w.y, w.z)).Magnitude + 0.5)
-                        w.bbDist.Text = d .. ' m'
-                    else
-                        w.bbDist.Text = ''
-                    end
-                end
-            end
-        end)
-    end
-
-    -- add row to panel if it's already open
-    if rideoutWpGui and _addRoWpRow then
-        local panel = rideoutWpGui:FindFirstChildWhichIsA('Frame')
-        local scroll = panel and panel:FindFirstChild('Scroll')
-        if scroll then _addRoWpRow(wp, scroll) end
-    end
-
-    showToast(name .. ' placed')
-    return wp
-end
-
-local function _clearRideoutWPs()
-    for _, wp in pairs(rideoutWPs) do
-        pcall(function() if wp.beamPart and wp.beamPart.Parent then wp.beamPart:Destroy() end end)
-        pcall(function() if wp.topPart  and wp.topPart.Parent  then wp.topPart:Destroy()  end end)
-        pcall(function() if wp.row      and wp.row.Parent      then wp.row:Destroy()      end end)
-    end
-    rideoutWPs  = {}
-    nextRoWpId  = 1
-    if _G.RideoutWPUpdateConn then _G.RideoutWPUpdateConn:Disconnect(); _G.RideoutWPUpdateConn = nil end
-end
-
-local function _cleanOwnership()
-    _ownershipActive = false
-    if _selfLeaderBox then
-        pcall(function() _selfLeaderBox:Destroy() end)
-        _selfLeaderBox = nil
-    end
-    if _ownershipHudGui then
-        _ownershipHudGui.Enabled = false
-    end
-    if _G.OwnershipConn then _G.OwnershipConn:Disconnect(); _G.OwnershipConn = nil end
-end
-
-local function _cleanLeaderESP()
-    if _leaderBox  then pcall(function() _leaderBox:Destroy()  end); _leaderBox  = nil end
-    if _leaderBill then pcall(function() _leaderBill:Destroy() end); _leaderBill = nil end
-end
-
-local function _cleanLeaderTrail()
-    if _G.RideoutTrailA0 then pcall(function() _G.RideoutTrailA0:Destroy() end); _G.RideoutTrailA0 = nil end
-    if _G.RideoutTrailA1 then pcall(function() _G.RideoutTrailA1:Destroy() end); _G.RideoutTrailA1 = nil end
-    if _G.RideoutTrail   then pcall(function() _G.RideoutTrail:Destroy()   end); _G.RideoutTrail   = nil end
-end
-
-local function _applyLeaderESP(p)
-    _cleanLeaderESP()
-    local char = p.Character
-    if not char then return end
-    local hrp = char:FindFirstChild('HumanoidRootPart')
-    if not hrp then return end
-    local box = Instance.new('SelectionBox')
-    box.Color3        = Color3.fromRGB(50, 255, 80)
-    box.LineThickness = 0.08
-    box.SurfaceTransparency = 0.85
-    box.SurfaceColor3 = Color3.fromRGB(50, 255, 80)
-    box.Adornee       = char
-    box.Parent        = workspace
-    _leaderBox = box
-    local bill = Instance.new('BillboardGui')
-    bill.AlwaysOnTop = true
-    bill.Size        = UDim2.new(0, 180, 0, 26)
-    bill.StudsOffset = Vector3.new(0, 4.5, 0)
-    bill.Adornee     = hrp
-    bill.Parent      = workspace
-    local lbl = Instance.new('TextLabel')
-    lbl.Size                   = UDim2.new(1, 0, 1, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text                   = '[LEADER] ' .. p.Name
-    lbl.TextColor3             = Color3.fromRGB(50, 255, 80)
-    lbl.Font                   = Enum.Font.GothamBold
-    lbl.TextSize               = 14
-    lbl.TextStrokeTransparency = 0.4
-    lbl.Parent                 = bill
-    _leaderBill = bill
-end
-
-local function _applyLeaderTrail(p)
-    _cleanLeaderTrail()
-    local char = p.Character
-    if not char then return end
-    local hrp = char:FindFirstChild('HumanoidRootPart')
-    if not hrp then return end
-    local a0 = Instance.new('Attachment')
-    a0.Position = Vector3.new(0, 0.6, 0)
-    a0.Parent   = hrp
-    local a1 = Instance.new('Attachment')
-    a1.Position = Vector3.new(0, -0.6, 0)
-    a1.Parent   = hrp
-    local trail = Instance.new('Trail')
-    trail.Attachment0   = a0
-    trail.Attachment1   = a1
-    trail.Lifetime      = 600
-    trail.MinLength     = 0
-    trail.FaceCamera    = true
-    trail.LightEmission = 0.9
-    trail.Color         = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(50, 255, 80)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(0,  160, 50)),
-    })
-    trail.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0),
-        NumberSequenceKeypoint.new(1, 0.3),
-    })
-    trail.Parent     = workspace
-    _G.RideoutTrailA0 = a0
-    _G.RideoutTrailA1 = a1
-    _G.RideoutTrail   = trail
-end
-
--- Start / Stop Rideout
-RideoutLeft:AddButton({
-    Text = 'Start Rideout',
-    Func = function()
-        _rideoutActive = true
-        showToast('Rideout started')
-    end
-})
-
-RideoutLeft:AddButton({
-    Text = 'Stop Rideout',
-    Func = function()
-        _rideoutActive = false
-        _rideoutLeader = nil
-        _cleanLeaderESP()
-        _cleanLeaderTrail()
-        _cleanOwnership()
-        if _G.RideoutLeaderConn  then _G.RideoutLeaderConn:Disconnect();  _G.RideoutLeaderConn  = nil end
-        if _G.RideoutFollowConn  then _G.RideoutFollowConn:Disconnect();  _G.RideoutFollowConn  = nil end
-        if _G.RideoutHUDConn     then _G.RideoutHUDConn:Disconnect();     _G.RideoutHUDConn     = nil end
-        if _rideoutHudGui        then _rideoutHudGui.Enabled = false end
-        showToast('Rideout stopped')
-    end
-})
-
-RideoutLeft:AddButton({
-    Text = 'Claim Ownership (set yourself as leader)',
-    Func = function()
-        if _ownershipActive then
-            _cleanOwnership()
-            showToast('Ownership released')
-            return
-        end
-
-        local myChar = plr.Character
-        if not myChar then showToast('Get in-game first'); return end
-
-        _ownershipActive = true
-
-        -- yellow SelectionBox on own character
-        local box = Instance.new('SelectionBox')
-        box.Color3               = Color3.fromRGB(255, 210, 0)
-        box.LineThickness        = 0.09
-        box.SurfaceTransparency  = 0.8
-        box.SurfaceColor3        = Color3.fromRGB(255, 210, 0)
-        box.Adornee              = myChar
-        box.Parent               = workspace
-        _selfLeaderBox           = box
-
-        -- build the top-center rider count HUD if it doesn't exist yet
-        if not _ownershipHudGui then
-            local hg = Instance.new('ScreenGui')
-            hg.Name           = 'OwnershipHudGui'
-            hg.ResetOnSpawn   = false
-            hg.DisplayOrder   = 215
-            hg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-            hg.Parent         = plr.PlayerGui
-            _ownershipHudGui  = hg
-
-            local bar = Instance.new('Frame')
-            bar.Name             = 'Bar'
-            bar.AnchorPoint      = Vector2.new(0.5, 0)
-            bar.Size             = UDim2.new(0, 340, 0, 42)
-            bar.Position         = UDim2.new(0.5, 0, 0, 6)
-            bar.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
-            bar.BorderSizePixel  = 1
-            bar.BorderColor3     = Color3.fromRGB(255, 210, 0)
-            bar.ZIndex           = 20
-            bar.Parent           = hg
-
-            -- left accent bar
-            local accent = Instance.new('Frame')
-            accent.Size             = UDim2.new(0, 3, 1, 0)
-            accent.BackgroundColor3 = Color3.fromRGB(255, 210, 0)
-            accent.BorderSizePixel  = 0
-            accent.ZIndex           = 21
-            accent.Parent           = bar
-
-            -- top line
-            local topLine = Instance.new('Frame')
-            topLine.Size             = UDim2.new(1, 0, 0, 2)
-            topLine.BackgroundColor3 = Color3.fromRGB(255, 210, 0)
-            topLine.BorderSizePixel  = 0
-            topLine.ZIndex           = 21
-            topLine.Parent           = bar
-
-            local badge = Instance.new('TextLabel')
-            badge.Size                   = UDim2.new(0, 80, 1, 0)
-            badge.Position               = UDim2.new(0, 8, 0, 0)
-            badge.BackgroundTransparency = 1
-            badge.Text                   = 'LEADING'
-            badge.TextColor3             = Color3.fromRGB(255, 210, 0)
-            badge.Font                   = Enum.Font.GothamBold
-            badge.TextSize               = 11
-            badge.TextXAlignment         = Enum.TextXAlignment.Left
-            badge.ZIndex                 = 21
-            badge.Parent                 = bar
-
-            local riderLbl = Instance.new('TextLabel')
-            riderLbl.Name                   = 'RiderLabel'
-            riderLbl.Size                   = UDim2.new(1, -100, 1, 0)
-            riderLbl.Position               = UDim2.new(0, 90, 0, 0)
-            riderLbl.BackgroundTransparency = 1
-            riderLbl.Text                   = '0 riders nearby'
-            riderLbl.TextColor3             = Color3.fromRGB(240, 240, 240)
-            riderLbl.Font                   = Enum.Font.Gotham
-            riderLbl.TextSize               = 15
-            riderLbl.TextXAlignment         = Enum.TextXAlignment.Left
-            riderLbl.ZIndex                 = 21
-            riderLbl.Parent                 = bar
-        end
-        _ownershipHudGui.Enabled = true
-
-        -- re-adorn box if character respawns
-        local RS2 = game:GetService('RunService')
-        local _lastOwnChar = myChar
-        local _frameCount  = 0
-        _G.OwnershipConn = RS2.Heartbeat:Connect(function()
-            if not _ownershipActive then return end
-
-            -- re-adorn on respawn
-            local curChar = plr.Character
-            if curChar ~= _lastOwnChar then
-                _lastOwnChar = curChar
-                if curChar and _selfLeaderBox then
-                    _selfLeaderBox.Adornee = curChar
-                end
-            end
-
-            -- update rider count every 30 frames (~0.5s)
-            _frameCount += 1
-            if _frameCount < 30 then return end
-            _frameCount = 0
-
-            local myHRP = curChar and curChar:FindFirstChild('HumanoidRootPart')
-            local bar2  = _ownershipHudGui and _ownershipHudGui:FindFirstChild('Bar')
-            local lbl   = bar2 and bar2:FindFirstChild('RiderLabel')
-            if not lbl then return end
-
-            local count = 0
-            if myHRP then
-                local myPos = myHRP.Position
-                for _, p in ipairs(Players:GetPlayers()) do
-                    if p == plr then continue end
-                    local c = p.Character
-                    local h = c and c:FindFirstChild('HumanoidRootPart')
-                    if h and (h.Position - myPos).Magnitude <= 200 then
-                        count += 1
-                    end
-                end
-            end
-
-            local word = count == 1 and 'rider' or 'riders'
-            lbl.Text = count .. ' ' .. word .. ' within 200 studs'
-        end)
-
-        showToast('You are the leader')
-    end
-})
-
-RideoutLeft:AddDivider()
-
--- Set Leader
-RideoutLeft:AddInput('RideoutLeaderName', {
-    Default  = '',
-    Numeric  = false,
-    Finished = false,
-    Text     = 'Leader username',
-})
-
-RideoutLeft:AddButton({
-    Text = 'Set Leader',
-    Func = function()
-        local raw = (Options.RideoutLeaderName and Options.RideoutLeaderName.Value or ''):lower():gsub('%s+', '')
-        if raw == '' then showToast('Enter a username'); return end
-        local found = nil
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= plr then
-                if p.Name:lower():find(raw, 1, true) or p.DisplayName:lower():find(raw, 1, true) then
-                    found = p; break
-                end
-            end
-        end
-        if not found then showToast('Player not found'); return end
-        _rideoutLeader = found
-        _applyLeaderESP(found)
-        showToast('Leader: ' .. found.Name)
-        -- re-apply trail if toggle is on
-        if Toggles.LeaderTrail and Toggles.LeaderTrail.Value then
-            _applyLeaderTrail(found)
-        end
-    end
-})
-
-RideoutLeft:AddDivider()
-
--- Leader Trail toggle
-RideoutLeft:AddToggle('LeaderTrail', {
-    Text    = 'Leader Trail (permanent)',
-    Default = false,
-    Callback = function(val)
-        if val then
-            if not _rideoutLeader then showToast('Set a leader first'); Toggles.LeaderTrail:SetValue(false); return end
-            _applyLeaderTrail(_rideoutLeader)
-            showToast('Leader trail ON')
-        else
-            _cleanLeaderTrail()
-            showToast('Leader trail OFF')
-        end
-    end
-})
-
--- Teleport to Leader
-RideoutLeft:AddButton({
-    Text = 'Teleport to Leader',
-    Func = function()
-        if not _rideoutLeader then showToast('Set a leader first'); return end
-        local char = _rideoutLeader.Character
-        if not char then showToast('Leader has no character'); return end
+local function refreshPlayerESP()
+    clearPlayerESP()
+    if not Toggles.PlayerESP or not Toggles.PlayerESP.Value then return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == plr then continue end
+        local char = p.Character
+        if not char then continue end
         local hrp = char:FindFirstChild('HumanoidRootPart')
-        if not hrp then showToast('Leader HRP not found'); return end
-        local myChar = plr.Character
-        local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
-        if not myHRP then showToast('Get in-game first'); return end
-        local offset = Vector3.new(3, 0, 3)
-        myHRP.CFrame = CFrame.new(hrp.Position + offset)
-        showToast('Teleported to ' .. _rideoutLeader.Name)
+        if not hrp then continue end
+
+        local box = Instance.new('SelectionBox')
+        box.Color3               = Color3.fromRGB(255, 255, 255)
+        box.LineThickness        = 0.05
+        box.SurfaceTransparency  = 0.9
+        box.SurfaceColor3        = Color3.fromRGB(255, 255, 255)
+        box.Adornee              = char
+        box.Parent               = workspace
+
+        local bill = Instance.new('BillboardGui')
+        bill.AlwaysOnTop = true
+        bill.Size        = UDim2.new(0, 160, 0, 22)
+        bill.StudsOffset = Vector3.new(0, 3.2, 0)
+        bill.Adornee     = hrp
+        bill.Parent      = workspace
+
+        local lbl = Instance.new('TextLabel')
+        lbl.Size                   = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text                   = p.Name
+        lbl.TextColor3             = Color3.fromRGB(230, 230, 230)
+        lbl.Font                   = Enum.Font.GothamBold
+        lbl.TextSize               = 13
+        lbl.TextStrokeTransparency = 0.4
+        lbl.Parent                 = bill
+
+        playerESPMap[p.UserId] = { box = box, bill = bill }
     end
-})
+end
 
-RideoutLeft:AddDivider()
-
--- Leader HUD toggle (right side of screen overlay)
-RideoutLeft:AddToggle('RideoutHUD', {
-    Text    = 'Rideout HUD',
+ESPLeft:AddToggle('PlayerESP', {
+    Text    = 'Player ESP',
     Default = false,
     Callback = function(val)
         if val then
-            if not _rideoutHudGui then
-                local hg = Instance.new('ScreenGui')
-                hg.Name           = 'RideoutHUDGui'
-                hg.ResetOnSpawn   = false
-                hg.DisplayOrder   = 210
-                hg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-                hg.Parent         = plr.PlayerGui
-                _rideoutHudGui = hg
-
-                local card = Instance.new('Frame')
-                card.Size             = UDim2.new(0, 220, 0, 72)
-                card.Position         = UDim2.new(1, -228, 0, 8)
-                card.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-                card.BorderSizePixel  = 1
-                card.BorderColor3     = Color3.fromRGB(50, 255, 80)
-                card.ZIndex           = 20
-                card.Parent           = hg
-
-                local accent = Instance.new('Frame')
-                accent.Size             = UDim2.new(0, 3, 1, 0)
-                accent.BackgroundColor3 = Color3.fromRGB(50, 255, 80)
-                accent.BorderSizePixel  = 0
-                accent.ZIndex           = 21
-                accent.Parent           = card
-
-                local titleL = Instance.new('TextLabel')
-                titleL.Size                   = UDim2.new(1, -10, 0, 20)
-                titleL.Position               = UDim2.new(0, 8, 0, 2)
-                titleL.BackgroundTransparency = 1
-                titleL.Text                   = 'RIDEOUT'
-                titleL.TextColor3             = Color3.fromRGB(50, 255, 80)
-                titleL.Font                   = Enum.Font.GothamBold
-                titleL.TextSize               = 12
-                titleL.TextXAlignment         = Enum.TextXAlignment.Left
-                titleL.ZIndex                 = 21
-                titleL.Parent                 = card
-
-                local infoL = Instance.new('TextLabel')
-                infoL.Name                   = 'InfoLabel'
-                infoL.Size                   = UDim2.new(1, -10, 0, 44)
-                infoL.Position               = UDim2.new(0, 8, 0, 24)
-                infoL.BackgroundTransparency = 1
-                infoL.Text                   = 'No leader set'
-                infoL.TextColor3             = Color3.fromRGB(200, 255, 200)
-                infoL.Font                   = Enum.Font.Gotham
-                infoL.TextSize               = 13
-                infoL.TextXAlignment         = Enum.TextXAlignment.Left
-                infoL.TextYAlignment         = Enum.TextYAlignment.Top
-                infoL.TextWrapped            = true
-                infoL.ZIndex                 = 21
-                infoL.Parent                 = card
-            end
-            _rideoutHudGui.Enabled = true
-            local infoLbl = _rideoutHudGui:FindFirstChild('Frame') and
-                            _rideoutHudGui.Frame:FindFirstChild('InfoLabel')
-            local RS2 = game:GetService('RunService')
-            _G.RideoutHUDConn = RS2.Heartbeat:Connect(function()
-                if not _rideoutHudGui or not _rideoutHudGui.Enabled then return end
-                local card2 = _rideoutHudGui:FindFirstChildWhichIsA('Frame')
-                if not card2 then return end
-                local lbl = card2:FindFirstChild('InfoLabel')
-                if not lbl then return end
-                if not _rideoutLeader then
-                    lbl.Text = 'No leader set'
-                    return
-                end
-                local lChar = _rideoutLeader.Character
-                local lHRP  = lChar and lChar:FindFirstChild('HumanoidRootPart')
-                local myChar2 = plr.Character
-                local myHRP2  = myChar2 and myChar2:FindFirstChild('HumanoidRootPart')
-                if not lHRP then lbl.Text = _rideoutLeader.Name .. '\nOffline'; return end
-                local spd  = math.floor((lHRP.AssemblyLinearVelocity.Magnitude * 0.625) + 0.5)
-                local dist = myHRP2 and math.floor((myHRP2.Position - lHRP.Position).Magnitude + 0.5) or 0
-                lbl.Text = _rideoutLeader.Name .. '\n' .. spd .. ' mph  |  ' .. dist .. ' studs away'
+            refreshPlayerESP()
+            local timer = 0
+            _G.PlayerESPConn = game:GetService('RunService').Heartbeat:Connect(function()
+                timer += 1
+                if timer >= 90 then timer = 0; refreshPlayerESP() end
             end)
-            showToast('Rideout HUD ON')
+            -- re-adorn when a player's character respawns mid-refresh
+            _G.PlayerESPCharConn = Players.PlayerAdded:Connect(function() refreshPlayerESP() end)
+            showToast('Player ESP ON')
         else
-            if _G.RideoutHUDConn then _G.RideoutHUDConn:Disconnect(); _G.RideoutHUDConn = nil end
-            if _rideoutHudGui then _rideoutHudGui.Enabled = false end
-            showToast('Rideout HUD OFF')
+            clearPlayerESP()
+            if _G.PlayerESPConn     then _G.PlayerESPConn:Disconnect();     _G.PlayerESPConn     = nil end
+            if _G.PlayerESPCharConn then _G.PlayerESPCharConn:Disconnect(); _G.PlayerESPCharConn = nil end
+            showToast('Player ESP OFF')
         end
     end
 })
 
-RideoutLeft:AddDivider()
-
--- Follow Leader toggle (steers player's bike toward leader each Heartbeat)
-RideoutLeft:AddToggle('FollowLeader', {
-    Text    = 'Follow Leader (bike fly)',
-    Default = false,
-    Callback = function(val)
-        if val then
-            if not _rideoutLeader then showToast('Set a leader first'); Toggles.FollowLeader:SetValue(false); return end
-            local RS2 = game:GetService('RunService')
-            _G.RideoutFollowConn = RS2.Heartbeat:Connect(function(dt)
-                if not _rideoutLeader then return end
-                local lChar = _rideoutLeader.Character
-                local lHRP  = lChar and lChar:FindFirstChild('HumanoidRootPart')
-                if not lHRP then return end
-                local _, bikeRoot = getBikeRoot()
-                if not bikeRoot then return end
-                local toLeader = lHRP.Position - bikeRoot.Position
-                local dist2 = toLeader.Magnitude
-                if dist2 < 6 then
-                    bikeRoot.AssemblyLinearVelocity = bikeRoot.AssemblyLinearVelocity * 0.85
-                    return
-                end
-                local dir = toLeader.Unit
-                local speed = math.min(dist2 * 0.5, 80)
-                bikeRoot.AssemblyLinearVelocity = Vector3.new(
-                    dir.X * speed,
-                    bikeRoot.AssemblyLinearVelocity.Y,
-                    dir.Z * speed
-                )
-            end)
-            showToast('Follow Leader ON')
-        else
-            if _G.RideoutFollowConn then _G.RideoutFollowConn:Disconnect(); _G.RideoutFollowConn = nil end
-            showToast('Follow Leader OFF')
-        end
-    end
-})
-
-RideoutLeft:AddDivider()
-
--- ---- Rideout Waypoints -------------------------------------------------
-RideoutLeft:AddInput('RoWpName', {
-    Default  = 'Waypoint',
-    Numeric  = false,
-    Finished = false,
-    Text     = 'Waypoint name',
-})
-
-RideoutLeft:AddButton({
-    Text = 'Set Waypoint (at your position)',
+ESPLeft:AddButton({
+    Text = 'Refresh Player ESP',
     Func = function()
-        local myChar = plr.Character
-        local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
-        if not myHRP then showToast('Get in-game first'); return end
-        local name = (Options.RoWpName and Options.RoWpName.Value or 'Waypoint')
-        if name:gsub('%s+', '') == '' then name = 'Waypoint' end
-        local pos = myHRP.Position
-        _makeRideoutWP(name, pos.X, pos.Y, pos.Z)
+        refreshPlayerESP()
+        showToast('Player ESP refreshed')
     end
 })
 
-RideoutLeft:AddDivider()
-
-RideoutLeft:AddInput('RoImportCF', {
-    Default  = '',
-    Numeric  = false,
-    Finished = false,
-    Text     = 'Import: X, Y, Z  (or CFrame.new(...))',
-})
-
-RideoutLeft:AddButton({
-    Text = 'Import Waypoint',
-    Func = function()
-        local str = Options.RoImportCF and Options.RoImportCF.Value or ''
-        local x, y, z = _parseXYZ(str)
-        if not x then showToast('Invalid CFrame -- use X, Y, Z'); return end
-        local name = (Options.RoWpName and Options.RoWpName.Value or 'Waypoint')
-        if name:gsub('%s+', '') == '' then name = 'Imported WP' end
-        _makeRideoutWP(name, x, y, z)
-    end
-})
-
-RideoutLeft:AddButton({
-    Text = 'Copy Current CFrame',
-    Func = function()
-        local myChar = plr.Character
-        local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
-        if not myHRP then showToast('Get in-game first'); return end
-        local p = myHRP.Position
-        local cfStr = string.format('%.2f, %.2f, %.2f', p.X, p.Y, p.Z)
-        pcall(function() setclipboard(cfStr) end)
-        showToast('Pos: ' .. cfStr)
-    end
-})
-
-RideoutLeft:AddDivider()
-
-RideoutLeft:AddButton({
-    Text = 'Waypoint List',
-    Func = function()
-        if rideoutWpGui then rideoutWpGui.Enabled = not rideoutWpGui.Enabled end
-    end
-})
-
-RideoutLeft:AddButton({
-    Text = 'Clear All Waypoints',
-    Func = function()
-        _clearRideoutWPs()
-        showToast('All waypoints cleared')
-    end
-})
-
--- Right groupbox: leader info + refresh
-RideoutRight:AddButton({
-    Text = 'Refresh Leader ESP',
-    Func = function()
-        if not _rideoutLeader then showToast('No leader set'); return end
-        _applyLeaderESP(_rideoutLeader)
-        if Toggles.LeaderTrail and Toggles.LeaderTrail.Value then
-            _applyLeaderTrail(_rideoutLeader)
-        end
-        showToast('Leader ESP refreshed')
-    end
-})
-
-RideoutRight:AddButton({
-    Text = 'Clear Leader',
-    Func = function()
-        _rideoutLeader = nil
-        _cleanLeaderESP()
-        _cleanLeaderTrail()
-        if Toggles.LeaderTrail then Toggles.LeaderTrail:SetValue(false) end
-        if Toggles.FollowLeader then Toggles.FollowLeader:SetValue(false) end
-        showToast('Leader cleared')
-    end
-})
-
-RideoutRight:AddDivider()
-
-RideoutRight:AddToggle('FullMapToggle', {
-    Text    = 'Full Map  (Z = show/hide)',
-    Default = false,
-    Callback = function(val)
-        if val then
-            if not _fullMapGui then showToast('Loading...'); return end
-            _fullMapGui.Enabled = true
-            if _fullMapDoScan then _fullMapDoScan() end
-            _G.FullMapKeyConn = UIS.InputBegan:Connect(function(inp, gp)
-                if gp then return end
-                if inp.KeyCode == Enum.KeyCode.Z then
-                    if _fullMapGui then
-                        _fullMapGui.Enabled = not _fullMapGui.Enabled
-                    end
-                end
-            end)
-            showToast('Full Map ON  (Z to toggle)')
-        else
-            if _fullMapGui then _fullMapGui.Enabled = false end
-            if _G.FullMapKeyConn then _G.FullMapKeyConn:Disconnect(); _G.FullMapKeyConn = nil end
-            showToast('Full Map OFF')
-        end
-    end
-})
-
-RideoutRight:AddButton({
-    Text = 'Scan at My Position',
-    Func = function()
-        local myChar = plr.Character
-        local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
-        if not myHRP then showToast('Get in-game first'); return end
-        _fmOriginX = myHRP.Position.X
-        _fmOriginZ = myHRP.Position.Z
-        if _fullMapDoScan then _fullMapDoScan() end
-        showToast('Scanning from your position...')
-    end
-})
-
-RideoutRight:AddButton({
-    Text = 'Rescan (world center)',
-    Func = function()
-        _fmOriginX = 0
-        _fmOriginZ = 0
-        if _fullMapDoScan then _fullMapDoScan() end
-        showToast('Rescanning from world center...')
-    end
-})
-
-RideoutRight:AddDivider()
-
--- auto-refresh leader ESP when leader respawns (character changed)
-do
-    local RS2 = game:GetService('RunService')
-    local _lastLeaderChar = nil
-    _G.RideoutLeaderConn = RS2.Heartbeat:Connect(function()
-        if not _rideoutLeader then _lastLeaderChar = nil; return end
-        local char = _rideoutLeader.Character
-        if char ~= _lastLeaderChar then
-            _lastLeaderChar = char
-            if char then
-                task.delay(0.2, function()
-                    _applyLeaderESP(_rideoutLeader)
-                    if Toggles.LeaderTrail and Toggles.LeaderTrail.Value then
-                        _applyLeaderTrail(_rideoutLeader)
-                    end
-                end)
-            end
-        end
-    end)
-end
-
--- ============================================================
--- RIDEOUT FULL MAP PANEL
--- ============================================================
-do
-    local FM_GRID    = 64
-    local FM_CELL_PX = 10
-    local FM_CANVAS  = FM_GRID * FM_CELL_PX   -- 640px
-    local FM_HALF    = 4000                    -- 8000 studs total coverage
-    local FM_CELL_W  = (FM_HALF * 2) / FM_GRID -- 125 studs per cell
-
-    local FM_COLORS = {
-        [Enum.Material.Grass]         = Color3.fromRGB(106, 127,  63),
-        [Enum.Material.LeafyGrass]    = Color3.fromRGB( 90, 130,  50),
-        [Enum.Material.Ground]        = Color3.fromRGB(100,  90,  60),
-        [Enum.Material.Mud]           = Color3.fromRGB(100,  75,  50),
-        [Enum.Material.Water]         = Color3.fromRGB( 40, 100, 200),
-        [Enum.Material.Rock]          = Color3.fromRGB(115, 115, 115),
-        [Enum.Material.Sand]          = Color3.fromRGB(198, 189, 122),
-        [Enum.Material.Snow]          = Color3.fromRGB(220, 230, 240),
-        [Enum.Material.Asphalt]       = Color3.fromRGB( 50,  50,  50),
-        [Enum.Material.Concrete]      = Color3.fromRGB(120, 120, 120),
-        [Enum.Material.SmoothPlastic] = Color3.fromRGB( 85,  85,  85),
-        [Enum.Material.Metal]         = Color3.fromRGB(140, 145, 155),
-        [Enum.Material.Wood]          = Color3.fromRGB(139,  90,  43),
-        [Enum.Material.Ice]           = Color3.fromRGB(180, 210, 240),
-        [Enum.Material.Cobblestone]   = Color3.fromRGB( 95,  90,  80),
-        [Enum.Material.WoodPlanks]    = Color3.fromRGB(150, 100,  55),
-        [Enum.Material.Pavement]      = Color3.fromRGB( 70,  70,  70),
-    }
-
-    local TITLE_H = 34
-    local WIN_W   = FM_CANVAS + 2
-    local WIN_H   = FM_CANVAS + TITLE_H + 2
-
-    local _fmCanvas    = nil
-    local _fmDotLayer  = nil
-    local _fmStatusLbl = nil
-    local _fmScanTask  = nil
-    local _fmDots      = {}
-    local _fmScanned   = false
-
-    local function _fmWorldToCanvas(wx, wz)
-        local px = (wx - (_fmOriginX - FM_HALF)) / (FM_HALF * 2) * FM_CANVAS
-        local pz = (wz - (_fmOriginZ - FM_HALF)) / (FM_HALF * 2) * FM_CANVAS
-        return math.clamp(math.floor(px + 0.5), 0, FM_CANVAS - 1),
-               math.clamp(math.floor(pz + 0.5), 0, FM_CANVAS - 1)
-    end
-
-    local function doScan()
-        if _fmScanTask then
-            task.cancel(_fmScanTask)
-            _fmScanTask = nil
-        end
-        _fmScanned = false
-        -- clear existing terrain pixels
-        if _fmCanvas then
-            for _, child in ipairs(_fmCanvas:GetChildren()) do
-                if child.Name == 'FMPx' then child:Destroy() end
-            end
-        end
-        if _fmStatusLbl then _fmStatusLbl.Text = 'Scanning  0%' end
-
-        _fmScanTask = task.spawn(function()
-            for row = 0, FM_GRID - 1 do
-                for col = 0, FM_GRID - 1 do
-                    local wx = _fmOriginX - FM_HALF + (col + 0.5) * FM_CELL_W
-                    local wz = _fmOriginZ - FM_HALF + (row + 0.5) * FM_CELL_W
-                    local result = workspace:Raycast(
-                        Vector3.new(wx, 800, wz),
-                        Vector3.new(0, -900, 0)
-                    )
-                    local color
-                    if result then
-                        color = FM_COLORS[result.Instance.Material]
-                        if not color then
-                            local pc = result.Instance.Color
-                            color = Color3.new(pc.R * 0.65, pc.G * 0.65, pc.B * 0.65)
-                        end
-                    else
-                        color = Color3.fromRGB(10, 12, 20)
-                    end
-                    if _fmCanvas and _fmCanvas.Parent then
-                        local px = Instance.new('Frame')
-                        px.Name             = 'FMPx'
-                        px.Size             = UDim2.new(0, FM_CELL_PX, 0, FM_CELL_PX)
-                        px.Position         = UDim2.new(0, col * FM_CELL_PX, 0, row * FM_CELL_PX)
-                        px.BackgroundColor3 = color
-                        px.BorderSizePixel  = 0
-                        px.ZIndex           = 21
-                        px.Parent           = _fmCanvas
-                    end
-                end
-                if _fmStatusLbl and _fmStatusLbl.Parent then
-                    local pct = math.floor((row + 1) / FM_GRID * 100 + 0.5)
-                    _fmStatusLbl.Text = 'Scanning  ' .. pct .. '%'
-                end
-                task.wait()
-            end
-            if _fmStatusLbl and _fmStatusLbl.Parent then
-                _fmStatusLbl.Text = 'Map ready'
-            end
-            _fmScanned = true
-            _fmScanTask = nil
-        end)
-    end
-
-    -- assign the outer-scope forward ref so the toggle button can call it
-    _fullMapDoScan = doScan
-
-    -- build ScreenGui
-    local fmg = Instance.new('ScreenGui')
-    fmg.Name           = 'FullMapGui'
-    fmg.ResetOnSpawn   = false
-    fmg.DisplayOrder   = 205
-    fmg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    fmg.Enabled        = false
-    fmg.Parent         = plr.PlayerGui
-    _fullMapGui        = fmg
-
-    local win = Instance.new('Frame')
-    win.Size             = UDim2.new(0, WIN_W, 0, WIN_H)
-    win.Position         = UDim2.new(0.5, -WIN_W/2, 0.5, -WIN_H/2)
-    win.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
-    win.BorderSizePixel  = 1
-    win.BorderColor3     = Color3.fromRGB(45, 45, 45)
-    win.Active           = true
-    win.ZIndex           = 20
-    win.Parent           = fmg
-
-    -- title bar
-    local tbar = Instance.new('Frame')
-    tbar.Size             = UDim2.new(1, 0, 0, TITLE_H)
-    tbar.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-    tbar.BorderSizePixel  = 0
-    tbar.ZIndex           = 21
-    tbar.Parent           = win
-
-    local tbarAccent = Instance.new('Frame')
-    tbarAccent.Size             = UDim2.new(1, 0, 0, 2)
-    tbarAccent.Position         = UDim2.new(0, 0, 1, -2)
-    tbarAccent.BackgroundColor3 = Color3.fromRGB(0, 120, 215)
-    tbarAccent.BorderSizePixel  = 0
-    tbarAccent.ZIndex           = 22
-    tbarAccent.Parent           = tbar
-
-    local tLbl = Instance.new('TextLabel')
-    tLbl.Size                   = UDim2.new(1, -200, 1, 0)
-    tLbl.Position               = UDim2.new(0, 8, 0, 0)
-    tLbl.BackgroundTransparency = 1
-    tLbl.Text                   = 'Full Map  |  Z: toggle'
-    tLbl.TextColor3             = Color3.fromRGB(220, 220, 220)
-    tLbl.Font                   = Enum.Font.GothamBold
-    tLbl.TextSize               = 13
-    tLbl.TextXAlignment         = Enum.TextXAlignment.Left
-    tLbl.ZIndex                 = 22
-    tLbl.Parent                 = tbar
-
-    local stLbl = Instance.new('TextLabel')
-    stLbl.Size                   = UDim2.new(0, 140, 1, 0)
-    stLbl.Position               = UDim2.new(1, -174, 0, 0)
-    stLbl.BackgroundTransparency = 1
-    stLbl.Text                   = 'Not scanned'
-    stLbl.TextColor3             = Color3.fromRGB(120, 120, 120)
-    stLbl.Font                   = Enum.Font.Gotham
-    stLbl.TextSize               = 12
-    stLbl.TextXAlignment         = Enum.TextXAlignment.Right
-    stLbl.ZIndex                 = 22
-    stLbl.Parent                 = tbar
-    _fmStatusLbl                 = stLbl
-
-    local fmClose = Instance.new('TextButton')
-    fmClose.Size             = UDim2.new(0, 32, 1, 0)
-    fmClose.Position         = UDim2.new(1, -32, 0, 0)
-    fmClose.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-    fmClose.BorderSizePixel  = 0
-    fmClose.Text             = 'X'
-    fmClose.TextColor3       = Color3.fromRGB(240, 240, 240)
-    fmClose.Font             = Enum.Font.GothamBold
-    fmClose.TextSize         = 13
-    fmClose.ZIndex           = 22
-    fmClose.Parent           = tbar
-    fmClose.MouseButton1Click:Connect(function() fmg.Enabled = false end)
-
-    -- drag title bar
-    do
-        local drag, dragStart, startPos = false, nil, nil
-        tbar.InputBegan:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                drag = true; dragStart = inp.Position; startPos = win.Position
-            end
-        end)
-        tbar.InputEnded:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
-        end)
-        game:GetService('UserInputService').InputChanged:Connect(function(inp)
-            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
-                local d = inp.Position - dragStart
-                win.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-                                         startPos.Y.Scale, startPos.Y.Offset + d.Y)
-            end
-        end)
-    end
-
-    -- map viewport (clips terrain + dots to FM_CANVAS x FM_CANVAS)
-    local viewport = Instance.new('Frame')
-    viewport.Size             = UDim2.new(0, FM_CANVAS, 0, FM_CANVAS)
-    viewport.Position         = UDim2.new(0, 1, 0, TITLE_H)
-    viewport.BackgroundColor3 = Color3.fromRGB(10, 12, 20)
-    viewport.BorderSizePixel  = 0
-    viewport.ClipsDescendants = true
-    viewport.ZIndex           = 20
-    viewport.Parent           = win
-
-    -- terrain canvas (child of viewport; terrain pixels placed here)
-    local canvas = Instance.new('Frame')
-    canvas.Size                  = UDim2.new(0, FM_CANVAS, 0, FM_CANVAS)
-    canvas.BackgroundTransparency = 1
-    canvas.ZIndex                = 21
-    canvas.Parent                = viewport
-    _fmCanvas                    = canvas
-
-    -- dot layer above terrain
-    local dotLayer = Instance.new('Frame')
-    dotLayer.Size                  = UDim2.new(0, FM_CANVAS, 0, FM_CANVAS)
-    dotLayer.BackgroundTransparency = 1
-    dotLayer.ZIndex                = 25
-    dotLayer.Parent                = viewport
-    _fmDotLayer                    = dotLayer
-
-    -- compass / north indicator (top-right corner of viewport)
-    local northLbl = Instance.new('TextLabel')
-    northLbl.Size                   = UDim2.new(0, 24, 0, 18)
-    northLbl.Position               = UDim2.new(1, -26, 0, 4)
-    northLbl.BackgroundColor3       = Color3.fromRGB(0, 0, 0)
-    northLbl.BackgroundTransparency = 0.4
-    northLbl.BorderSizePixel        = 0
-    northLbl.Text                   = 'N'
-    northLbl.TextColor3             = Color3.fromRGB(255, 80, 80)
-    northLbl.Font                   = Enum.Font.GothamBold
-    northLbl.TextSize               = 13
-    northLbl.ZIndex                 = 30
-    northLbl.Parent                 = viewport
-
-    -- scale bar (bottom-left)
-    local scaleLbl = Instance.new('TextLabel')
-    scaleLbl.Size                   = UDim2.new(0, 120, 0, 14)
-    scaleLbl.Position               = UDim2.new(0, 4, 1, -16)
-    scaleLbl.BackgroundColor3       = Color3.fromRGB(0, 0, 0)
-    scaleLbl.BackgroundTransparency = 0.5
-    scaleLbl.BorderSizePixel        = 0
-    scaleLbl.Text                   = '1 cell = ' .. FM_CELL_W .. ' studs'
-    scaleLbl.TextColor3             = Color3.fromRGB(160, 160, 160)
-    scaleLbl.Font                   = Enum.Font.Gotham
-    scaleLbl.TextSize               = 10
-    scaleLbl.ZIndex                 = 30
-    scaleLbl.Parent                 = viewport
-
-    -- player dots -- updated every ~6 frames
-    local _fmDotFrame = 0
-    local function getOrMakeDot(uid, isSelf, isLeader)
-        if _fmDots[uid] then return _fmDots[uid] end
-        local dotSize = isSelf and 10 or 7
-        local dotColor
-        if isSelf then
-            dotColor = Color3.fromRGB(255, 210, 0)   -- yellow = self
-        elseif isLeader then
-            dotColor = Color3.fromRGB(50, 255, 80)   -- green = rideout leader
-        else
-            dotColor = Color3.fromRGB(220, 80, 80)   -- red = other players
-        end
-
-        local dot = Instance.new('Frame')
-        dot.Size             = UDim2.new(0, dotSize, 0, dotSize)
-        dot.AnchorPoint      = Vector2.new(0.5, 0.5)
-        dot.BackgroundColor3 = dotColor
-        dot.BorderSizePixel  = 1
-        dot.BorderColor3     = Color3.fromRGB(0, 0, 0)
-        dot.ZIndex           = 26
-        dot.Parent           = _fmDotLayer
-
-        local nameLbl = Instance.new('TextLabel')
-        nameLbl.Size                   = UDim2.new(0, 70, 0, 11)
-        nameLbl.AnchorPoint            = Vector2.new(0.5, 1)
-        nameLbl.Position               = UDim2.new(0.5, 0, 0, -1)
-        nameLbl.BackgroundTransparency = 1
-        nameLbl.TextColor3             = dotColor
-        nameLbl.Font                   = Enum.Font.Gotham
-        nameLbl.TextSize               = 9
-        nameLbl.TextStrokeTransparency = 0.4
-        nameLbl.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
-        nameLbl.ZIndex                 = 27
-        nameLbl.Parent                 = dot
-        _fmDots[uid] = dot
-        return dot
-    end
-
-    local RS2 = game:GetService('RunService')
-    _G.FullMapDotConn = RS2.Heartbeat:Connect(function()
-        if not fmg.Enabled then return end
-        _fmDotFrame += 1
-        if _fmDotFrame < 6 then return end
-        _fmDotFrame = 0
-
-        local seen = {}
-        for _, p in ipairs(Players:GetPlayers()) do
-            local c = p.Character
-            local h = c and c:FindFirstChild('HumanoidRootPart')
-            if not h then continue end
-            local isSelf   = (p == plr)
-            local isLeader = (_rideoutLeader ~= nil and p == _rideoutLeader)
-            local dot = getOrMakeDot(p.UserId, isSelf, isLeader)
-            local px, pz = _fmWorldToCanvas(h.Position.X, h.Position.Z)
-            dot.Position = UDim2.new(0, px, 0, pz)
-            local lbl = dot:FindFirstChildWhichIsA('TextLabel')
-            if lbl then lbl.Text = isSelf and 'You' or p.Name end
-            dot.Visible  = true
-            seen[p.UserId] = true
-        end
-        -- hide dots for players no longer in the server
-        for uid, dot in pairs(_fmDots) do
-            if not seen[uid] then dot.Visible = false end
-        end
-    end)
-end
-
--- ============================================================
--- RIDEOUT WAYPOINT LIST PANEL
--- ============================================================
-do
-    local wpg = Instance.new('ScreenGui')
-    wpg.Name           = 'RideoutWPGui'
-    wpg.ResetOnSpawn   = false
-    wpg.DisplayOrder   = 996
-    wpg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    wpg.Enabled        = false
-    wpg.Parent         = plr.PlayerGui
-    rideoutWpGui       = wpg
-
-    local panel = Instance.new('Frame')
-    panel.Name             = 'Panel'
-    panel.Size             = UDim2.new(0, 440, 0, 420)
-    panel.Position         = UDim2.new(0.5, -220, 0.5, -210)
-    panel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-    panel.BorderSizePixel  = 1
-    panel.BorderColor3     = Color3.fromRGB(50, 80, 50)
-    panel.Active           = true
-    panel.ZIndex           = 10
-    panel.Parent           = wpg
-
-    -- drag
-    do
-        local drag, dragStart, startPos = false, nil, nil
-        panel.InputBegan:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                drag = true; dragStart = inp.Position; startPos = panel.Position
-            end
-        end)
-        panel.InputEnded:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
-        end)
-        game:GetService('UserInputService').InputChanged:Connect(function(inp)
-            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
-                local d = inp.Position - dragStart
-                panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-                                           startPos.Y.Scale, startPos.Y.Offset + d.Y)
-            end
-        end)
-    end
-
-    -- title bar
-    local titleBar = Instance.new('Frame')
-    titleBar.Size             = UDim2.new(1, 0, 0, 30)
-    titleBar.BackgroundColor3 = Color3.fromRGB(25, 45, 25)
-    titleBar.BorderSizePixel  = 0
-    titleBar.ZIndex           = 11
-    titleBar.Parent           = panel
-
-    local accentLine = Instance.new('Frame')
-    accentLine.Size             = UDim2.new(1, 0, 0, 2)
-    accentLine.Position         = UDim2.new(0, 0, 1, -2)
-    accentLine.BackgroundColor3 = Color3.fromRGB(50, 255, 80)
-    accentLine.BorderSizePixel  = 0
-    accentLine.ZIndex           = 12
-    accentLine.Parent           = titleBar
-
-    local titleLblWp = Instance.new('TextLabel')
-    titleLblWp.Size                   = UDim2.new(1, -40, 1, 0)
-    titleLblWp.Position               = UDim2.new(0, 10, 0, 0)
-    titleLblWp.BackgroundTransparency = 1
-    titleLblWp.Text                   = 'Rideout Waypoints'
-    titleLblWp.TextColor3             = Color3.fromRGB(50, 255, 80)
-    titleLblWp.Font                   = Enum.Font.GothamBold
-    titleLblWp.TextSize               = 14
-    titleLblWp.TextXAlignment         = Enum.TextXAlignment.Left
-    titleLblWp.ZIndex                 = 12
-    titleLblWp.Parent                 = titleBar
-
-    local closeBtnWp = Instance.new('TextButton')
-    closeBtnWp.Size             = UDim2.new(0, 30, 1, 0)
-    closeBtnWp.Position         = UDim2.new(1, -30, 0, 0)
-    closeBtnWp.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
-    closeBtnWp.BorderSizePixel  = 0
-    closeBtnWp.Text             = 'X'
-    closeBtnWp.TextColor3       = Color3.fromRGB(240, 240, 240)
-    closeBtnWp.Font             = Enum.Font.GothamBold
-    closeBtnWp.TextSize         = 13
-    closeBtnWp.ZIndex           = 12
-    closeBtnWp.Parent           = titleBar
-    closeBtnWp.MouseButton1Click:Connect(function() wpg.Enabled = false end)
-
-    -- column header
-    local hdr = Instance.new('Frame')
-    hdr.Size             = UDim2.new(1, 0, 0, 22)
-    hdr.Position         = UDim2.new(0, 0, 0, 30)
-    hdr.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-    hdr.BorderSizePixel  = 0
-    hdr.ZIndex           = 11
-    hdr.Parent           = panel
-
-    local function hdrLabel(txt, x, w)
-        local l = Instance.new('TextLabel')
-        l.Size                   = UDim2.new(0, w, 1, 0)
-        l.Position               = UDim2.new(0, x, 0, 0)
-        l.BackgroundTransparency = 1
-        l.Text                   = txt
-        l.TextColor3             = Color3.fromRGB(140, 140, 140)
-        l.Font                   = Enum.Font.GothamBold
-        l.TextSize               = 11
-        l.TextXAlignment         = Enum.TextXAlignment.Left
-        l.ZIndex                 = 12
-        l.Parent                 = hdr
-    end
-    hdrLabel('Name',     8,   240)
-    hdrLabel('',         248,  0)
-    hdrLabel('Position', 256, 120)
-
-    -- scrolling list
-    local scroll = Instance.new('ScrollingFrame')
-    scroll.Name                            = 'Scroll'
-    scroll.Size                            = UDim2.new(1, 0, 1, -106)
-    scroll.Position                        = UDim2.new(0, 0, 0, 52)
-    scroll.BackgroundColor3                = Color3.fromRGB(16, 16, 16)
-    scroll.BorderSizePixel                 = 0
-    scroll.ScrollBarThickness              = 6
-    scroll.ScrollBarImageColor3            = Color3.fromRGB(50, 200, 70)
-    scroll.CanvasSize                      = UDim2.new(0, 0, 0, 0)
-    scroll.AutomaticCanvasSize             = Enum.AutomaticSize.Y
-    scroll.ZIndex                          = 11
-    scroll.Parent                          = panel
-
-    local listLayout = Instance.new('UIListLayout')
-    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    listLayout.Padding   = UDim.new(0, 2)
-    listLayout.Parent    = scroll
-
-    local listPad = Instance.new('UIPadding')
-    listPad.PaddingTop  = UDim.new(0, 3)
-    listPad.PaddingLeft = UDim.new(0, 3)
-    listPad.Parent      = scroll
-
-    -- empty state label
-    local emptyLbl = Instance.new('TextLabel')
-    emptyLbl.Name                   = 'EmptyLabel'
-    emptyLbl.Size                   = UDim2.new(1, 0, 0, 36)
-    emptyLbl.BackgroundTransparency = 1
-    emptyLbl.Text                   = 'No waypoints placed yet.\nUse "Set Waypoint" in the Rideout tab.'
-    emptyLbl.TextColor3             = Color3.fromRGB(100, 100, 100)
-    emptyLbl.Font                   = Enum.Font.Gotham
-    emptyLbl.TextSize               = 12
-    emptyLbl.TextWrapped            = true
-    emptyLbl.ZIndex                 = 12
-    emptyLbl.Parent                 = scroll
-
-    local function updateEmptyLabel()
-        local count = 0
-        for _ in pairs(rideoutWPs) do count += 1 end
-        emptyLbl.Visible = (count == 0)
-    end
-
-    -- footer: total count label + clear-all button
-    local footer = Instance.new('Frame')
-    footer.Size             = UDim2.new(1, 0, 0, 54)
-    footer.Position         = UDim2.new(0, 0, 1, -54)
-    footer.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
-    footer.BorderSizePixel  = 0
-    footer.ZIndex           = 11
-    footer.Parent           = panel
-
-    local footerLine = Instance.new('Frame')
-    footerLine.Size             = UDim2.new(1, 0, 0, 1)
-    footerLine.BackgroundColor3 = Color3.fromRGB(50, 80, 50)
-    footerLine.BorderSizePixel  = 0
-    footerLine.ZIndex           = 12
-    footerLine.Parent           = footer
-
-    local countLbl = Instance.new('TextLabel')
-    countLbl.Name                   = 'CountLabel'
-    countLbl.Size                   = UDim2.new(0.5, 0, 0, 26)
-    countLbl.Position               = UDim2.new(0, 8, 0, 6)
-    countLbl.BackgroundTransparency = 1
-    countLbl.Text                   = '0 waypoints'
-    countLbl.TextColor3             = Color3.fromRGB(130, 130, 130)
-    countLbl.Font                   = Enum.Font.Gotham
-    countLbl.TextSize               = 12
-    countLbl.TextXAlignment         = Enum.TextXAlignment.Left
-    countLbl.ZIndex                 = 12
-    countLbl.Parent                 = footer
-
-    local clearAllBtn = Instance.new('TextButton')
-    clearAllBtn.Size             = UDim2.new(0, 130, 0, 26)
-    clearAllBtn.Position         = UDim2.new(1, -138, 0, 6)
-    clearAllBtn.BackgroundColor3 = Color3.fromRGB(130, 35, 35)
-    clearAllBtn.BorderSizePixel  = 0
-    clearAllBtn.Text             = 'Clear All'
-    clearAllBtn.TextColor3       = Color3.fromRGB(240, 240, 240)
-    clearAllBtn.Font             = Enum.Font.GothamBold
-    clearAllBtn.TextSize         = 12
-    clearAllBtn.ZIndex           = 12
-    clearAllBtn.Parent           = footer
-    clearAllBtn.MouseButton1Click:Connect(function()
-        _clearRideoutWPs()
-        updateEmptyLabel()
-        countLbl.Text = '0 waypoints'
-        showToast('All waypoints cleared')
-    end)
-
-    local function updateCountLabel()
-        local count = 0
-        for _ in pairs(rideoutWPs) do count += 1 end
-        countLbl.Text = count .. (count == 1 and ' waypoint' or ' waypoints')
-    end
-
-    -- assign the forward-declared helpers
-    _reflowRoWpRows = function()
-        -- UIListLayout handles positioning automatically; just update footer
-        updateCountLabel()
-        updateEmptyLabel()
-    end
-
-    _addRoWpRow = function(wp, sc)
-        local rowCount = 0
-        for _ in pairs(rideoutWPs) do rowCount += 1 end
-
-        local row = Instance.new('Frame')
-        row.Name             = 'WpRow_' .. wp.id
-        row.LayoutOrder      = wp.id
-        row.Size             = UDim2.new(1, -6, 0, 30)
-        row.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
-        row.BorderColor3     = Color3.fromRGB(40, 60, 40)
-        row.BorderSizePixel  = 1
-        row.ZIndex           = 12
-        row.Parent           = sc
-        wp.row = row
-
-        -- editable name box
-        local nameBox = Instance.new('TextBox')
-        nameBox.Size             = UDim2.new(1, -204, 1, -6)
-        nameBox.Position         = UDim2.new(0, 4, 0, 3)
-        nameBox.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-        nameBox.BorderColor3     = Color3.fromRGB(45, 70, 45)
-        nameBox.BorderSizePixel  = 1
-        nameBox.Text             = wp.name
-        nameBox.TextColor3       = Color3.fromRGB(220, 220, 220)
-        nameBox.Font             = Enum.Font.Gotham
-        nameBox.TextSize         = 13
-        nameBox.PlaceholderText  = 'Waypoint name'
-        nameBox.ClearTextOnFocus = false
-        nameBox.TextXAlignment   = Enum.TextXAlignment.Left
-        nameBox.ZIndex           = 13
-        nameBox.Parent           = row
-        nameBox.FocusLost:Connect(function()
-            local newName = nameBox.Text:match('^%s*(.-)%s*$')
-            if not newName or newName == '' then
-                newName = 'WP ' .. wp.id
-                nameBox.Text = newName
-            end
-            wp.name = newName
-            if wp.bbName and wp.bbName.Parent then wp.bbName.Text = newName end
-        end)
-
-        -- position display label
-        local posLbl = Instance.new('TextLabel')
-        posLbl.Size                   = UDim2.new(0, 100, 1, -6)
-        posLbl.Position               = UDim2.new(1, -200, 0, 3)
-        posLbl.BackgroundTransparency = 1
-        posLbl.Text                   = string.format('%.0f, %.0f, %.0f', wp.x, wp.y, wp.z)
-        posLbl.TextColor3             = Color3.fromRGB(100, 160, 100)
-        posLbl.Font                   = Enum.Font.Gotham
-        posLbl.TextSize               = 10
-        posLbl.TextXAlignment         = Enum.TextXAlignment.Left
-        posLbl.ZIndex                 = 13
-        posLbl.Parent                 = row
-
-        -- Go (teleport) button
-        local goBtn = Instance.new('TextButton')
-        goBtn.Size             = UDim2.new(0, 44, 1, -6)
-        goBtn.Position         = UDim2.new(1, -96, 0, 3)
-        goBtn.BackgroundColor3 = Color3.fromRGB(0, 100, 180)
-        goBtn.BorderSizePixel  = 0
-        goBtn.Text             = 'Go'
-        goBtn.TextColor3       = Color3.fromRGB(240, 240, 240)
-        goBtn.Font             = Enum.Font.GothamBold
-        goBtn.TextSize         = 12
-        goBtn.ZIndex           = 13
-        goBtn.Parent           = row
-        goBtn.MouseButton1Click:Connect(function()
-            local myChar = plr.Character
-            local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
-            if not myHRP then return end
-            myHRP.CFrame = CFrame.new(wp.x, wp.y + 3, wp.z)
-            showToast('Teleported to ' .. wp.name)
-        end)
-
-        -- Copy CFrame button
-        local cpBtn = Instance.new('TextButton')
-        cpBtn.Size             = UDim2.new(0, 44, 1, -6)
-        cpBtn.Position         = UDim2.new(1, -48, 0, 3)
-        cpBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-        cpBtn.BorderSizePixel  = 0
-        cpBtn.Text             = 'Copy'
-        cpBtn.TextColor3       = Color3.fromRGB(180, 255, 180)
-        cpBtn.Font             = Enum.Font.GothamBold
-        cpBtn.TextSize         = 11
-        cpBtn.ZIndex           = 13
-        cpBtn.Parent           = row
-        cpBtn.MouseButton1Click:Connect(function()
-            local cfStr = string.format('%.2f, %.2f, %.2f', wp.x, wp.y, wp.z)
-            pcall(function() setclipboard(cfStr) end)
-            showToast('Copied: ' .. cfStr)
-        end)
-
-        -- small red X delete button at far right of row
-        local xBtn = Instance.new('TextButton')
-        xBtn.Size             = UDim2.new(0, 18, 1, -6)
-        xBtn.Position         = UDim2.new(1, -2, 0, 3)
-        xBtn.AnchorPoint      = Vector2.new(1, 0)
-        xBtn.BackgroundColor3 = Color3.fromRGB(160, 35, 35)
-        xBtn.BorderSizePixel  = 0
-        xBtn.Text             = 'X'
-        xBtn.TextColor3       = Color3.fromRGB(240, 240, 240)
-        xBtn.Font             = Enum.Font.GothamBold
-        xBtn.TextSize         = 10
-        xBtn.ZIndex           = 13
-        xBtn.Parent           = row
-        xBtn.MouseButton1Click:Connect(function()
-            pcall(function() if wp.beamPart and wp.beamPart.Parent then wp.beamPart:Destroy() end end)
-            pcall(function() if wp.topPart  and wp.topPart.Parent  then wp.topPart:Destroy()  end end)
-            row:Destroy()
-            rideoutWPs[wp.id] = nil
-            _reflowRoWpRows()
-        end)
-
-        _reflowRoWpRows()
-    end
-
-    -- populate rows for any waypoints already placed before panel was built
-    for _, wp in pairs(rideoutWPs) do
-        _addRoWpRow(wp, scroll)
-    end
-    updateEmptyLabel()
-    updateCountLabel()
-end
-
--- ============================================================
 -- custom spawner panel (linoria-matched, no rounding)
 -- ============================================================
 
@@ -4303,14 +2933,86 @@ end
 -- BIKE CUSTOMIZATION PANEL
 -- ============================================================
 do
-    local BIKE_MATERIALS = {
-        { name = 'Plastic',      mat = Enum.Material.SmoothPlastic },
-        { name = 'Metal',        mat = Enum.Material.Metal         },
-        { name = 'Neon',         mat = Enum.Material.Neon          },
-        { name = 'ForceField',   mat = Enum.Material.ForceField    },
-        { name = 'Glass',        mat = Enum.Material.Glass         },
-        { name = 'DiamondPlate', mat = Enum.Material.DiamondPlate  },
-    }
+    local _scooterMode = false
+
+    local function getTargetModel()
+        local char = plr.Character
+        local hum2  = char and char:FindFirstChildWhichIsA('Humanoid')
+        if not hum2 or not hum2.SeatPart then return nil end
+        local base = hum2.SeatPart.Parent
+        if not base then return nil end
+        if _scooterMode then
+            local root = base
+            while root and root.Parent and root.Parent ~= workspace
+                  and root.Parent:IsA('Model') do
+                root = root.Parent
+            end
+            return root
+        else
+            return base
+        end
+    end
+
+    local function isWheelPart(p)
+        local n = p.Name:lower()
+        return n:find('wheel') or n:find('tire') or n:find('tyre')
+            or n:find('rim') or n:find('hub')
+    end
+
+    local function applyToAll(fn)
+        local model = getTargetModel()
+        if not model then showToast('Not on a bike'); return end
+        for _, p in ipairs(model:GetDescendants()) do
+            if p:IsA('BasePart') then pcall(fn, p) end
+        end
+    end
+
+    local function applyToWheels(fn)
+        local model = getTargetModel()
+        if not model then showToast('Not on a bike'); return end
+        local parts = {}
+        for _, p in ipairs(model:GetDescendants()) do
+            if p:IsA('BasePart') and isWheelPart(p) then
+                table.insert(parts, p)
+            end
+        end
+        if #parts == 0 then
+            for _, p in ipairs(model:GetDescendants()) do
+                if p:IsA('Part') and p.Shape == Enum.PartType.Cylinder then
+                    table.insert(parts, p)
+                end
+            end
+        end
+        for _, p in ipairs(parts) do pcall(fn, p) end
+    end
+
+    local function applyToBody(fn)
+        local model = getTargetModel()
+        if not model then showToast('Not on a bike'); return end
+        local wheelSet = {}
+        for _, p in ipairs(model:GetDescendants()) do
+            if p:IsA('BasePart') and isWheelPart(p) then wheelSet[p] = true end
+        end
+        local hasNamed = next(wheelSet) ~= nil
+        for _, p in ipairs(model:GetDescendants()) do
+            if p:IsA('BasePart') then
+                if hasNamed then
+                    if not wheelSet[p] then pcall(fn, p) end
+                else
+                    if not (p:IsA('Part') and p.Shape == Enum.PartType.Cylinder) then
+                        pcall(fn, p)
+                    end
+                end
+            end
+        end
+    end
+
+    local function getBikeRoot()
+        local model = getTargetModel()
+        if not model then return nil end
+        local seat = model:FindFirstChildWhichIsA('VehicleSeat', true)
+        return seat or model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true)
+    end
 
     local bc = Instance.new('ScreenGui')
     bc.Name           = 'BikeCustGui'
@@ -4322,8 +3024,8 @@ do
     bikeCustGui       = bc
 
     local panel = Instance.new('Frame')
-    panel.Size             = UDim2.new(0, 380, 0, 520)
-    panel.Position         = UDim2.new(0.5, 80, 0.5, -260)
+    panel.Size             = UDim2.new(0, 430, 0, 580)
+    panel.Position         = UDim2.new(0.5, -155, 0.5, -290)
     panel.BackgroundColor3 = BG2
     panel.BorderSizePixel  = 1
     panel.BorderColor3     = BORDER
@@ -4331,7 +3033,6 @@ do
     panel.ZIndex           = 10
     panel.Parent           = bc
 
-    -- drag
     do
         local drag, dragStart, startPos = false, nil, nil
         panel.InputBegan:Connect(function(inp)
@@ -4342,7 +3043,7 @@ do
         panel.InputEnded:Connect(function(inp)
             if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
         end)
-        game:GetService('UserInputService').InputChanged:Connect(function(inp)
+        UIS.InputChanged:Connect(function(inp)
             if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
                 local d = inp.Position - dragStart
                 panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
@@ -4351,284 +3052,580 @@ do
         end)
     end
 
-    -- title bar
     local titleBar = Instance.new('Frame')
-    titleBar.Size             = UDim2.new(1, 0, 0, 28)
+    titleBar.Size             = UDim2.new(1, 0, 0, 32)
     titleBar.BackgroundColor3 = BGSUB
     titleBar.BorderSizePixel  = 0
     titleBar.ZIndex           = 11
     titleBar.Parent           = panel
-    local titleLbl2 = Instance.new('TextLabel')
-    titleLbl2.Size                   = UDim2.new(1, -36, 1, 0)
-    titleLbl2.Position               = UDim2.new(0, 8, 0, 0)
-    titleLbl2.BackgroundTransparency = 1
-    titleLbl2.Text                   = 'Bike Customization'
-    titleLbl2.TextColor3             = TEXT
-    titleLbl2.Font                   = Enum.Font.GothamBold
-    titleLbl2.TextSize               = 14
-    titleLbl2.TextXAlignment         = Enum.TextXAlignment.Left
-    titleLbl2.ZIndex                 = 12
-    titleLbl2.Parent                 = titleBar
-    local closeBtn2 = Instance.new('TextButton')
-    closeBtn2.Size             = UDim2.new(0, 28, 0, 28)
-    closeBtn2.Position         = UDim2.new(1, -28, 0, 0)
-    closeBtn2.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-    closeBtn2.BorderSizePixel  = 0
-    closeBtn2.Text             = 'X'
-    closeBtn2.TextColor3       = TEXT
-    closeBtn2.Font             = Enum.Font.GothamBold
-    closeBtn2.TextSize         = 13
-    closeBtn2.ZIndex           = 12
-    closeBtn2.Parent           = titleBar
-    closeBtn2.MouseButton1Click:Connect(function() bc.Enabled = false end)
+    do
+        local tl = Instance.new('TextLabel')
+        tl.Size = UDim2.new(1, -140, 1, 0); tl.Position = UDim2.new(0, 8, 0, 0)
+        tl.BackgroundTransparency = 1; tl.Text = 'Bike Customization'
+        tl.TextColor3 = TEXT; tl.Font = Enum.Font.GothamBold
+        tl.TextSize = 14; tl.TextXAlignment = Enum.TextXAlignment.Left
+        tl.ZIndex = 12; tl.Parent = titleBar
 
-    local rowY2 = 36
-    local function makeRow2(labelText, default, onChanged)
-        local lbl = Instance.new('TextLabel')
-        lbl.Size  = UDim2.new(0, 140, 0, 22)
-        lbl.Position = UDim2.new(0, 10, 0, rowY2)
-        lbl.BackgroundTransparency = 1
-        lbl.Text  = labelText
-        lbl.TextColor3 = TEXT
-        lbl.Font  = Enum.Font.Gotham
-        lbl.TextSize = 13
-        lbl.TextXAlignment = Enum.TextXAlignment.Left
-        lbl.ZIndex = 11
-        lbl.Parent = panel
-        local box = Instance.new('TextBox')
-        box.Size  = UDim2.new(0, 180, 0, 22)
-        box.Position = UDim2.new(0, 155, 0, rowY2)
-        box.BackgroundColor3 = BGSUB
-        box.BorderColor3     = BORDER
-        box.BorderSizePixel  = 1
-        box.Text  = tostring(default)
-        box.TextColor3 = TEXT
-        box.Font  = Enum.Font.Gotham
-        box.TextSize = 13
-        box.ZIndex = 11
-        box.Parent = panel
-        box.FocusLost:Connect(function() onChanged(box.Text) end)
-        rowY2 += 28
-        return box
+        local sl = Instance.new('TextLabel')
+        sl.Size = UDim2.new(0, 50, 0, 20); sl.Position = UDim2.new(1, -132, 0.5, -10)
+        sl.BackgroundTransparency = 1; sl.Text = 'Scooter'
+        sl.TextColor3 = SUBTEXT; sl.Font = Enum.Font.Gotham
+        sl.TextSize = 11; sl.TextXAlignment = Enum.TextXAlignment.Right
+        sl.ZIndex = 12; sl.Parent = titleBar
+
+        local stb = Instance.new('TextButton')
+        stb.Size = UDim2.new(0, 44, 0, 20); stb.Position = UDim2.new(1, -78, 0.5, -10)
+        stb.BackgroundColor3 = BGSUB; stb.BorderSizePixel = 1; stb.BorderColor3 = BORDER
+        stb.Text = 'OFF'; stb.TextColor3 = SUBTEXT
+        stb.Font = Enum.Font.GothamBold; stb.TextSize = 11; stb.ZIndex = 12; stb.Parent = titleBar
+        stb.MouseButton1Click:Connect(function()
+            _scooterMode = not _scooterMode
+            if _scooterMode then stb.BackgroundColor3 = ACCENT; stb.TextColor3 = TEXT; stb.Text = 'ON'
+            else stb.BackgroundColor3 = BGSUB; stb.TextColor3 = SUBTEXT; stb.Text = 'OFF' end
+            showToast('Scooter mode: ' .. (_scooterMode and 'ON' or 'OFF'))
+        end)
+
+        local cb = Instance.new('TextButton')
+        cb.Size = UDim2.new(0, 32, 0, 32); cb.Position = UDim2.new(1, -32, 0, 0)
+        cb.BackgroundColor3 = Color3.fromRGB(180, 50, 50); cb.BorderSizePixel = 0
+        cb.Text = 'X'; cb.TextColor3 = TEXT; cb.Font = Enum.Font.GothamBold
+        cb.TextSize = 13; cb.ZIndex = 12; cb.Parent = titleBar
+        cb.MouseButton1Click:Connect(function() bc.Enabled = false end)
     end
 
-    local function makeDivLine2()
-        local line = Instance.new('Frame')
-        line.Size             = UDim2.new(1, -20, 0, 1)
-        line.Position         = UDim2.new(0, 10, 0, rowY2 + 4)
-        line.BackgroundColor3 = BORDER
-        line.BorderSizePixel  = 0
-        line.ZIndex           = 11
-        line.Parent           = panel
-        rowY2 += 14
+    local scroll = Instance.new('ScrollingFrame')
+    scroll.Size                   = UDim2.new(1, 0, 1, -32)
+    scroll.Position               = UDim2.new(0, 0, 0, 32)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel        = 0
+    scroll.ScrollBarThickness     = 5
+    scroll.ScrollBarImageColor3   = BORDER
+    scroll.CanvasSize             = UDim2.new(0, 0, 0, 0)
+    scroll.AutomaticCanvasSize    = Enum.AutomaticSize.Y
+    scroll.ZIndex                 = 11
+    scroll.Parent                 = panel
+    do
+        local lay = Instance.new('UIListLayout')
+        lay.SortOrder = Enum.SortOrder.LayoutOrder; lay.Padding = UDim.new(0, 0); lay.Parent = scroll
+        local pad = Instance.new('UIPadding')
+        pad.PaddingBottom = UDim.new(0, 14); pad.Parent = scroll
     end
 
-    local function makeSectionLbl(text)
-        local lbl = Instance.new('TextLabel')
-        lbl.Size                   = UDim2.new(1, -20, 0, 20)
-        lbl.Position               = UDim2.new(0, 10, 0, rowY2)
-        lbl.BackgroundTransparency = 1
-        lbl.Text                   = text
-        lbl.TextColor3             = ACCENT
-        lbl.Font                   = Enum.Font.GothamBold
-        lbl.TextSize               = 12
-        lbl.TextXAlignment         = Enum.TextXAlignment.Left
-        lbl.ZIndex                 = 11
-        lbl.Parent                 = panel
-        rowY2 += 24
+    local _bcOrder = 0
+    local function bcNext() _bcOrder = _bcOrder + 1; return _bcOrder end
+    local function bcSecHdr(label)
+        local f = Instance.new('Frame')
+        f.Size = UDim2.new(1,0,0,26); f.BackgroundColor3 = BGSUB
+        f.BorderSizePixel = 0; f.LayoutOrder = bcNext(); f.ZIndex = 11; f.Parent = scroll
+        local l = Instance.new('TextLabel')
+        l.Size = UDim2.new(1,-10,1,0); l.Position = UDim2.new(0,10,0,0)
+        l.BackgroundTransparency = 1; l.Text = label; l.TextColor3 = ACCENT
+        l.Font = Enum.Font.GothamBold; l.TextSize = 12
+        l.TextXAlignment = Enum.TextXAlignment.Left; l.ZIndex = 12; l.Parent = f
     end
+    local function bcRow(h)
+        local f = Instance.new('Frame')
+        f.Size = UDim2.new(1,0,0,h or 28); f.BackgroundTransparency = 1
+        f.LayoutOrder = bcNext(); f.ZIndex = 11; f.Parent = scroll
+        return f
+    end
+    local function bcLbl(par, text, x, y, w, h)
+        local l = Instance.new('TextLabel')
+        l.Size = UDim2.new(0,w or 110,0,h or 20); l.Position = UDim2.new(0,x,0,y)
+        l.BackgroundTransparency = 1; l.Text = text; l.TextColor3 = TEXT
+        l.Font = Enum.Font.Gotham; l.TextSize = 12
+        l.TextXAlignment = Enum.TextXAlignment.Left; l.ZIndex = 12; l.Parent = par
+        return l
+    end
+    local function bcInp(par, def, x, y, w, h)
+        local b = Instance.new('TextBox')
+        b.Size = UDim2.new(0,w or 54,0,h or 22); b.Position = UDim2.new(0,x,0,y)
+        b.BackgroundColor3 = BGSUB; b.BorderSizePixel = 1; b.BorderColor3 = BORDER
+        b.Text = tostring(def or ''); b.TextColor3 = TEXT; b.Font = Enum.Font.Gotham
+        b.TextSize = 12; b.ClearTextOnFocus = false; b.ZIndex = 12; b.Parent = par
+        return b
+    end
+    local function bcBtn(par, text, x, y, w, h)
+        local b = Instance.new('TextButton')
+        b.Size = UDim2.new(0,w or 80,0,h or 22); b.Position = UDim2.new(0,x,0,y)
+        b.BackgroundColor3 = BGSUB; b.BorderSizePixel = 1; b.BorderColor3 = BORDER
+        b.Text = text; b.TextColor3 = TEXT; b.Font = Enum.Font.Gotham
+        b.TextSize = 12; b.ZIndex = 12; b.Parent = par
+        return b
+    end
+    local function bcTog(par, x, y, w, h)
+        local b = Instance.new('TextButton')
+        b.Size = UDim2.new(0,w or 48,0,h or 22); b.Position = UDim2.new(0,x,0,y)
+        b.BackgroundColor3 = BGSUB; b.BorderSizePixel = 1; b.BorderColor3 = BORDER
+        b.Text = 'OFF'; b.TextColor3 = SUBTEXT; b.Font = Enum.Font.GothamBold
+        b.TextSize = 11; b.ZIndex = 12; b.Parent = par
+        return b
+    end
+    local function bcTogOn(b) b.BackgroundColor3=ACCENT; b.TextColor3=TEXT; b.Text='ON' end
+    local function bcTogOff(b) b.BackgroundColor3=BGSUB; b.TextColor3=SUBTEXT; b.Text='OFF' end
 
-    -- helper: apply to all bike parts
-    local function applyToBike(fn)
-        local bikeModel = getBikeRoot()
-        if not bikeModel then showToast('Get on a bike first'); return end
-        for _, p in ipairs(bikeModel:GetDescendants()) do
-            if p:IsA('BasePart') then pcall(fn, p) end
+    -- shared state: tables keep cross-section refs to ~4 locals instead of ~22
+    local matBtns  = {}
+    local togBtns  = {}
+    local togState = { hl=false, sp=false, smk=false, fire=false, spk=false, ff=false, ng=false, shad=true, sndLoop=false }
+    local effInst  = { spotlights = {} }
+
+    -- ================================================================
+    -- MATERIAL
+    -- ================================================================
+    do
+        bcSecHdr('MATERIAL')
+        local MAT = {
+            {'Plastic',Enum.Material.SmoothPlastic}, {'Metal',Enum.Material.Metal},
+            {'Neon',Enum.Material.Neon},             {'ForceField',Enum.Material.ForceField},
+            {'Glass',Enum.Material.Glass},           {'DiamondPlate',Enum.Material.DiamondPlate},
+            {'Ice',Enum.Material.Ice},               {'Brick',Enum.Material.Brick},
+            {'Wood',Enum.Material.Wood},             {'Sand',Enum.Material.Sand},
+            {'Granite',Enum.Material.Granite},       {'Marble',Enum.Material.Marble},
+        }
+        local mf = bcRow(math.ceil(#MAT/4) * 26 + 8)
+        for i, e in ipairs(MAT) do
+            local col = (i-1)%4; local row = math.floor((i-1)/4)
+            local b = bcBtn(mf, e[1], 8+col*100, 4+row*26, 96, 22)
+            table.insert(matBtns, b)
+            b.MouseButton1Click:Connect(function()
+                applyToAll(function(p) p.Material = e[2] end)
+                for _, mb in ipairs(matBtns) do mb.BackgroundColor3 = BGSUB end
+                b.BackgroundColor3 = ACCENT
+                showToast(e[1] .. ' applied')
+            end)
         end
     end
 
-    -- --- Material presets ---
-    makeSectionLbl('Material')
-    local matBtns = {}
-    local matPerRow = 3
-    for i, entry in ipairs(BIKE_MATERIALS) do
-        local col = (i - 1) % matPerRow
-        local row = math.floor((i - 1) / matPerRow)
-        local btn = Instance.new('TextButton')
-        btn.Size             = UDim2.new(0, 110, 0, 22)
-        btn.Position         = UDim2.new(0, 10 + col * 118, 0, rowY2 + row * 26)
-        btn.BackgroundColor3 = BGSUB
-        btn.BorderColor3     = BORDER
-        btn.BorderSizePixel  = 1
-        btn.Text             = entry.name
-        btn.TextColor3       = TEXT
-        btn.Font             = Enum.Font.Gotham
-        btn.TextSize         = 12
-        btn.ZIndex           = 11
-        btn.Parent           = panel
-        matBtns[i]           = btn
-        btn.MouseButton1Click:Connect(function()
-            for _, b in ipairs(matBtns) do b.BackgroundColor3 = BGSUB end
-            btn.BackgroundColor3 = ACCENT
-            applyToBike(function(p) p.Material = entry.mat end)
-            showToast('Material: ' .. entry.name)
+    -- ================================================================
+    -- QUICK COLOR
+    -- ================================================================
+    do
+        bcSecHdr('QUICK COLOR')
+        local QC = {
+            {'Red',220,50,50},   {'Orange',255,140,0},  {'Yellow',255,220,0}, {'Lime',80,200,80},
+            {'Cyan',0,200,220},  {'Blue',50,100,220},   {'Purple',150,50,220},{'Pink',255,100,180},
+            {'White',255,255,255},{'Black',20,20,20},   {'Gold',212,175,55},  {'Chrome',190,195,200},
+        }
+        local qf = bcRow(math.ceil(#QC/4) * 26 + 8)
+        for i, e in ipairs(QC) do
+            local col = (i-1)%4; local row = math.floor((i-1)/4)
+            local c = Color3.fromRGB(e[2], e[3], e[4])
+            local b = bcBtn(qf, e[1], 8+col*100, 4+row*26, 96, 22)
+            b.BackgroundColor3 = c
+            b.TextColor3 = (e[2] > 200 and e[3] > 200) and Color3.fromRGB(20,20,20) or Color3.fromRGB(255,255,255)
+            b.MouseButton1Click:Connect(function()
+                applyToAll(function(p) p.Color = c end)
+                showToast(e[1] .. ' applied')
+            end)
+        end
+    end
+
+    -- ================================================================
+    -- CUSTOM COLOR
+    -- ================================================================
+    do
+        bcSecHdr('CUSTOM COLOR')
+        do
+            local r = bcRow(30)
+            bcLbl(r,'All Parts  R:',8,5,86,20)
+            local R = bcInp(r,'255',96,4,44,22); bcLbl(r,'G:',144,5,14,20)
+            local G = bcInp(r,'255',160,4,44,22); bcLbl(r,'B:',208,5,14,20)
+            local B = bcInp(r,'255',224,4,44,22)
+            bcBtn(r,'Apply All',274,4,80,22).MouseButton1Click:Connect(function()
+                applyToAll(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255)) end)
+                showToast('Color applied to all parts')
+            end)
+        end
+        do
+            local r = bcRow(30)
+            bcLbl(r,'Wheels  R:',8,5,70,20)
+            local R = bcInp(r,'20',80,4,44,22); bcLbl(r,'G:',128,5,14,20)
+            local G = bcInp(r,'20',144,4,44,22); bcLbl(r,'B:',192,5,14,20)
+            local B = bcInp(r,'20',208,4,44,22)
+            bcBtn(r,'Apply Wheels',258,4,100,22).MouseButton1Click:Connect(function()
+                applyToWheels(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 20,0,255),math.clamp(tonumber(G.Text)or 20,0,255),math.clamp(tonumber(B.Text)or 20,0,255)) end)
+                showToast('Wheel color applied')
+            end)
+        end
+        do
+            local r = bcRow(30)
+            bcLbl(r,'Body  R:',8,5,58,20)
+            local R = bcInp(r,'255',68,4,44,22); bcLbl(r,'G:',116,5,14,20)
+            local G = bcInp(r,'255',132,4,44,22); bcLbl(r,'B:',180,5,14,20)
+            local B = bcInp(r,'255',196,4,44,22)
+            bcBtn(r,'Apply Body',246,4,90,22).MouseButton1Click:Connect(function()
+                applyToBody(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255)) end)
+                showToast('Body color applied')
+            end)
+        end
+    end
+
+    -- ================================================================
+    -- SURFACE
+    -- ================================================================
+    do
+        bcSecHdr('SURFACE')
+        do
+            local r = bcRow(30); bcLbl(r,'Transparency:',8,5,90,20)
+            local inp = bcInp(r,'0',100,4,54,22)
+            bcBtn(r,'Apply',160,4,70,22).MouseButton1Click:Connect(function()
+                local v = math.clamp(tonumber(inp.Text)or 0,0,0.99)
+                applyToAll(function(p) p.Transparency=v end); showToast('Transparency: '..v)
+            end)
+        end
+        do
+            local r = bcRow(30); bcLbl(r,'Reflectance:',8,5,84,20)
+            local inp = bcInp(r,'0',94,4,54,22)
+            bcBtn(r,'Apply',154,4,70,22).MouseButton1Click:Connect(function()
+                local v = math.clamp(tonumber(inp.Text)or 0,0,1)
+                applyToAll(function(p) p.Reflectance=v end); showToast('Reflectance: '..v)
+            end)
+        end
+        do
+            local r = bcRow(30); bcLbl(r,'Cast Shadow:',8,5,82,20)
+            togBtns.shad = bcTog(r,92,4); bcTogOn(togBtns.shad)
+            togBtns.shad.MouseButton1Click:Connect(function()
+                togState.shad = not togState.shad
+                if togState.shad then bcTogOn(togBtns.shad) else bcTogOff(togBtns.shad) end
+                applyToAll(function(p) p.CastShadow=togState.shad end)
+            end)
+        end
+    end
+
+    -- ================================================================
+    -- SIZE SCALE
+    -- ================================================================
+    do
+        bcSecHdr('SIZE SCALE')
+        local r = bcRow(30); bcLbl(r,'Multiplier:',8,5,74,20)
+        local inp = bcInp(r,'1.0',84,4,58,22)
+        bcBtn(r,'Apply Scale',148,4,96,22).MouseButton1Click:Connect(function()
+            local mult = tonumber(inp.Text) or 1.0
+            if mult <= 0 then showToast('Invalid scale'); return end
+            local model = getTargetModel()
+            if not model then showToast('Not on a bike'); return end
+            local parts = {}
+            for _, p in ipairs(model:GetDescendants()) do
+                if p:IsA('BasePart') then table.insert(parts, p) end
+            end
+            if #parts == 0 then return end
+            local cx,cy,cz = 0,0,0
+            for _, p in ipairs(parts) do cx=cx+p.Position.X; cy=cy+p.Position.Y; cz=cz+p.Position.Z end
+            local n = #parts
+            local cen = Vector3.new(cx/n,cy/n,cz/n)
+            for _, p in ipairs(parts) do
+                pcall(function() local off=p.Position-cen; p.Size=p.Size*mult; p.Position=cen+off*mult end)
+            end
+            showToast('Scale x'..mult..' applied')
         end)
     end
-    rowY2 += math.ceil(#BIKE_MATERIALS / matPerRow) * 26 + 4
 
-    makeDivLine2()
-
-    -- --- Color ---
-    makeSectionLbl('Color')
-    local colorBoxes = {}
-    colorBoxes.r = makeRow2('Red (0-255)', 255, function() end)
-    colorBoxes.g = makeRow2('Green (0-255)', 0,   function() end)
-    colorBoxes.b = makeRow2('Blue (0-255)', 200,  function() end)
-
-    local applyColorBtn = Instance.new('TextButton')
-    applyColorBtn.Size             = UDim2.new(0, 160, 0, 24)
-    applyColorBtn.Position         = UDim2.new(0, 10, 0, rowY2)
-    applyColorBtn.BackgroundColor3 = BGSUB
-    applyColorBtn.BorderColor3     = BORDER
-    applyColorBtn.BorderSizePixel  = 1
-    applyColorBtn.Text             = 'Apply Color'
-    applyColorBtn.TextColor3       = TEXT
-    applyColorBtn.Font             = Enum.Font.GothamBold
-    applyColorBtn.TextSize         = 13
-    applyColorBtn.ZIndex           = 11
-    applyColorBtn.Parent           = panel
-    applyColorBtn.MouseButton1Click:Connect(function()
-        local r = math.clamp(tonumber(colorBoxes.r.Text) or 255, 0, 255)
-        local g = math.clamp(tonumber(colorBoxes.g.Text) or 0,   0, 255)
-        local b = math.clamp(tonumber(colorBoxes.b.Text) or 200, 0, 255)
-        local col = Color3.fromRGB(r, g, b)
-        applyToBike(function(p) p.Color = col end)
-        showToast(string.format('Color: %d %d %d', r, g, b))
-    end)
-    rowY2 += 32
-
-    makeDivLine2()
-
-    -- --- Transparency & Reflectance ---
-    makeSectionLbl('Surface')
-    makeRow2('Transparency (0-1)', 0, function(v)
-        local n = math.clamp(tonumber(v) or 0, 0, 0.99)
-        applyToBike(function(p) p.Transparency = n end)
-    end)
-    makeRow2('Reflectance (0-1)', 0, function(v)
-        local n = math.clamp(tonumber(v) or 0, 0, 1)
-        applyToBike(function(p) p.Reflectance = n end)
-    end)
-
-    makeDivLine2()
-
-    -- --- Headlight ---
-    makeSectionLbl('Headlight')
-    local _bikeLight = nil
-    local hlBrightnessBox = makeRow2('Brightness', 5, function() end)
-    local hlRangeBox      = makeRow2('Range (studs)', 40, function() end)
-
-    local hlToggleBtn = Instance.new('TextButton')
-    hlToggleBtn.Size             = UDim2.new(0, 160, 0, 24)
-    hlToggleBtn.Position         = UDim2.new(0, 10, 0, rowY2)
-    hlToggleBtn.BackgroundColor3 = BGSUB
-    hlToggleBtn.BorderColor3     = BORDER
-    hlToggleBtn.BorderSizePixel  = 1
-    hlToggleBtn.Text             = 'Headlight: OFF'
-    hlToggleBtn.TextColor3       = TEXT
-    hlToggleBtn.Font             = Enum.Font.GothamBold
-    hlToggleBtn.TextSize         = 13
-    hlToggleBtn.ZIndex           = 11
-    hlToggleBtn.Parent           = panel
-    hlToggleBtn.MouseButton1Click:Connect(function()
-        if _bikeLight and _bikeLight.Parent then
-            _bikeLight:Destroy(); _bikeLight = nil
-            hlToggleBtn.BackgroundColor3 = BGSUB
-            hlToggleBtn.Text = 'Headlight: OFF'
-            showToast('Headlight OFF')
-        else
-            local _, bikeRoot = getBikeRoot()
-            if not bikeRoot then showToast('Get on a bike first'); return end
-            local pl = Instance.new('PointLight')
-            pl.Brightness = math.max(0.1, tonumber(hlBrightnessBox.Text) or 5)
-            pl.Range      = math.max(1,   tonumber(hlRangeBox.Text)      or 40)
-            pl.Color      = Color3.fromRGB(255, 240, 200)
-            pl.Parent     = bikeRoot
-            _bikeLight    = pl
-            hlToggleBtn.BackgroundColor3 = ACCENT
-            hlToggleBtn.Text = 'Headlight: ON'
-            showToast('Headlight ON')
-        end
-    end)
-    rowY2 += 32
-
-    makeDivLine2()
-
-    -- --- Exhaust Smoke ---
-    makeSectionLbl('Exhaust Smoke')
-    local _bikeSmoke = nil
-
-    local smokeToggleBtn = Instance.new('TextButton')
-    smokeToggleBtn.Size             = UDim2.new(0, 160, 0, 24)
-    smokeToggleBtn.Position         = UDim2.new(0, 10, 0, rowY2)
-    smokeToggleBtn.BackgroundColor3 = BGSUB
-    smokeToggleBtn.BorderColor3     = BORDER
-    smokeToggleBtn.BorderSizePixel  = 1
-    smokeToggleBtn.Text             = 'Smoke: OFF'
-    smokeToggleBtn.TextColor3       = TEXT
-    smokeToggleBtn.Font             = Enum.Font.GothamBold
-    smokeToggleBtn.TextSize         = 13
-    smokeToggleBtn.ZIndex           = 11
-    smokeToggleBtn.Parent           = panel
-    smokeToggleBtn.MouseButton1Click:Connect(function()
-        if _bikeSmoke and _bikeSmoke.Parent then
-            _bikeSmoke:Destroy(); _bikeSmoke = nil
-            smokeToggleBtn.BackgroundColor3 = BGSUB
-            smokeToggleBtn.Text = 'Smoke: OFF'
-            showToast('Smoke OFF')
-        else
-            local _, bikeRoot = getBikeRoot()
-            if not bikeRoot then showToast('Get on a bike first'); return end
-            local sm = Instance.new('Smoke')
-            sm.Color      = Color3.fromRGB(180, 180, 180)
-            sm.Opacity    = 0.3
-            sm.RiseVelocity = 4
-            sm.Size       = 2
-            sm.Parent     = bikeRoot
-            _bikeSmoke    = sm
-            smokeToggleBtn.BackgroundColor3 = ACCENT
-            smokeToggleBtn.Text = 'Smoke: ON'
-            showToast('Smoke ON')
-        end
-    end)
-    rowY2 += 32
-
-    -- Reset button
-    makeDivLine2()
-    local resetBtn = Instance.new('TextButton')
-    resetBtn.Size             = UDim2.new(1, -20, 0, 24)
-    resetBtn.Position         = UDim2.new(0, 10, 0, rowY2)
-    resetBtn.BackgroundColor3 = Color3.fromRGB(120, 40, 40)
-    resetBtn.BorderColor3     = BORDER
-    resetBtn.BorderSizePixel  = 1
-    resetBtn.Text             = 'Reset Appearance'
-    resetBtn.TextColor3       = TEXT
-    resetBtn.Font             = Enum.Font.GothamBold
-    resetBtn.TextSize         = 13
-    resetBtn.ZIndex           = 11
-    resetBtn.Parent           = panel
-    resetBtn.MouseButton1Click:Connect(function()
-        applyToBike(function(p)
-            p.Material     = Enum.Material.SmoothPlastic
-            p.Transparency = 0
-            p.Reflectance  = 0
+    -- ================================================================
+    -- LIGHTING
+    -- ================================================================
+    bcSecHdr('LIGHTING')
+    do -- headlight
+        local r0 = bcRow(26); bcLbl(r0,'Headlight Color  R:',8,3,128,20)
+        local hlR = bcInp(r0,'255',138,2,44,22); bcLbl(r0,'G:',186,3,14,20)
+        local hlG = bcInp(r0,'255',202,2,44,22); bcLbl(r0,'B:',250,3,14,20)
+        local hlB = bcInp(r0,'255',266,2,44,22)
+        local r1 = bcRow(30); bcLbl(r1,'Brightness:',8,5,74,20)
+        local hlBr = bcInp(r1,'5',84,4,44,22); bcLbl(r1,'Range:',132,5,44,20)
+        local hlRg = bcInp(r1,'40',178,4,44,22)
+        local r2 = bcRow(30); bcLbl(r2,'Headlight:',8,5,68,20)
+        togBtns.hl = bcTog(r2,78,4)
+        togBtns.hl.MouseButton1Click:Connect(function()
+            togState.hl = not togState.hl
+            if togState.hl then
+                bcTogOn(togBtns.hl)
+                local root = getBikeRoot()
+                if root then
+                    if effInst.headlight then effInst.headlight:Destroy() end
+                    local sl = Instance.new('SpotLight')
+                    sl.Color      = Color3.fromRGB(math.clamp(tonumber(hlR.Text)or 255,0,255),math.clamp(tonumber(hlG.Text)or 255,0,255),math.clamp(tonumber(hlB.Text)or 255,0,255))
+                    sl.Brightness = math.clamp(tonumber(hlBr.Text)or 5,0,20)
+                    sl.Range      = math.clamp(tonumber(hlRg.Text)or 40,0,60)
+                    sl.Angle      = 75
+                    sl.Face       = Enum.NormalId.Front
+                    sl.Parent     = root; effInst.headlight = sl
+                end
+            else
+                bcTogOff(togBtns.hl)
+                if effInst.headlight then effInst.headlight:Destroy(); effInst.headlight = nil end
+            end
         end)
-        for _, b in ipairs(matBtns) do b.BackgroundColor3 = BGSUB end
-        showToast('Appearance reset')
-    end)
+    end
+    do -- spotlights
+        local r0 = bcRow(30); bcLbl(r0,'Spotlight Br:',8,5,84,20)
+        local spBr = bcInp(r0,'3',94,4,40,22); bcLbl(r0,'Rng:',138,5,32,20)
+        local spRg = bcInp(r0,'20',172,4,40,22); bcLbl(r0,'Ang:',216,5,32,20)
+        local spAng = bcInp(r0,'90',250,4,40,22)
+        local r1 = bcRow(30); bcLbl(r1,'Spotlights:',8,5,74,20)
+        togBtns.sp = bcTog(r1,84,4)
+        togBtns.sp.MouseButton1Click:Connect(function()
+            togState.sp = not togState.sp
+            if togState.sp then
+                bcTogOn(togBtns.sp)
+                for _, s in ipairs(effInst.spotlights) do pcall(function() s:Destroy() end) end
+                effInst.spotlights = {}
+                local model = getTargetModel()
+                if model then
+                    local wh = {}
+                    for _, p in ipairs(model:GetDescendants()) do
+                        if p:IsA('BasePart') and isWheelPart(p) then table.insert(wh,p) end
+                    end
+                    if #wh == 0 then
+                        for _, p in ipairs(model:GetDescendants()) do
+                            if p:IsA('Part') and p.Shape==Enum.PartType.Cylinder then table.insert(wh,p) end
+                        end
+                    end
+                    for _, p in ipairs(wh) do
+                        local sl = Instance.new('SpotLight')
+                        sl.Brightness=math.clamp(tonumber(spBr.Text)or 3,0,10)
+                        sl.Range=math.clamp(tonumber(spRg.Text)or 20,0,60)
+                        sl.Angle=math.clamp(tonumber(spAng.Text)or 90,0,180)
+                        sl.Face=Enum.NormalId.Bottom; sl.Parent=p
+                        table.insert(effInst.spotlights, sl)
+                    end
+                end
+            else
+                bcTogOff(togBtns.sp)
+                for _, s in ipairs(effInst.spotlights) do pcall(function() s:Destroy() end) end
+                effInst.spotlights = {}
+            end
+        end)
+    end
+    do -- neon glow
+        local r = bcRow(30); bcLbl(r,'Neon Glow (all):',8,5,110,20)
+        togBtns.ng = bcTog(r,120,4)
+        togBtns.ng.MouseButton1Click:Connect(function()
+            togState.ng = not togState.ng
+            if togState.ng then
+                bcTogOn(togBtns.ng); applyToAll(function(p) p.Material=Enum.Material.Neon end)
+            else
+                bcTogOff(togBtns.ng); applyToAll(function(p) p.Material=Enum.Material.SmoothPlastic end)
+            end
+        end)
+    end
 
-    -- resize panel to fit content
-    panel.Size = UDim2.new(0, 380, 0, rowY2 + 40)
+    -- ================================================================
+    -- PARTICLES & EFFECTS
+    -- ================================================================
+    bcSecHdr('PARTICLES & EFFECTS')
+    do -- smoke
+        local r0 = bcRow(26); bcLbl(r0,'Smoke Color  R:',8,3,108,20)
+        local smkR = bcInp(r0,'128',118,2,44,22); bcLbl(r0,'G:',166,3,14,20)
+        local smkG = bcInp(r0,'128',182,2,44,22); bcLbl(r0,'B:',230,3,14,20)
+        local smkB = bcInp(r0,'128',246,2,44,22)
+        local r1 = bcRow(30); bcLbl(r1,'Size:',8,5,38,20)
+        local smkSz = bcInp(r1,'1',48,4,44,22); bcLbl(r1,'Opacity:',96,5,56,20)
+        local smkOp = bcInp(r1,'0.5',154,4,50,22)
+        local r2 = bcRow(30); bcLbl(r2,'Smoke:',8,5,50,20)
+        togBtns.smk = bcTog(r2,60,4)
+        togBtns.smk.MouseButton1Click:Connect(function()
+            togState.smk = not togState.smk
+            if togState.smk then
+                bcTogOn(togBtns.smk)
+                local root = getBikeRoot()
+                if root then
+                    if effInst.smoke then effInst.smoke:Destroy() end
+                    -- find exhaust/muffler/pipe by name; fall back to rearmost part
+                    local smkParent = root
+                    local model = getTargetModel()
+                    if model then
+                        local back = -root.CFrame.LookVector
+                        local bestDot, bestPart = -math.huge, nil
+                        for _, p in ipairs(model:GetDescendants()) do
+                            if p:IsA('BasePart') then
+                                local n = p.Name:lower()
+                                if n:find('exhaust') or n:find('muffler') or n:find('pipe') or n:find('tail') then
+                                    bestPart = p; break
+                                end
+                                local d = (p.Position - root.Position).Unit:Dot(back)
+                                if d > bestDot then bestDot = d; bestPart = p end
+                            end
+                        end
+                        if bestPart then smkParent = bestPart end
+                    end
+                    local sm = Instance.new('Smoke')
+                    sm.Color=Color3.fromRGB(math.clamp(tonumber(smkR.Text)or 128,0,255),math.clamp(tonumber(smkG.Text)or 128,0,255),math.clamp(tonumber(smkB.Text)or 128,0,255))
+                    sm.Size=math.clamp(tonumber(smkSz.Text)or 1,0.1,10)
+                    sm.Opacity=math.clamp(tonumber(smkOp.Text)or 0.5,0,1)
+                    sm.RiseVelocity=3; sm.Parent=smkParent; effInst.smoke=sm
+                end
+            else
+                bcTogOff(togBtns.smk)
+                if effInst.smoke then effInst.smoke:Destroy(); effInst.smoke=nil end
+            end
+        end)
+    end
+    do -- fire
+        local r0 = bcRow(30); bcLbl(r0,'Fire Size:',8,5,60,20)
+        local fireSz = bcInp(r0,'5',70,4,44,22); bcLbl(r0,'Heat:',118,5,40,20)
+        local fireHt = bcInp(r0,'9',160,4,44,22)
+        local r1 = bcRow(30); bcLbl(r1,'Fire:',8,5,36,20)
+        togBtns.fire = bcTog(r1,46,4)
+        togBtns.fire.MouseButton1Click:Connect(function()
+            togState.fire = not togState.fire
+            if togState.fire then
+                bcTogOn(togBtns.fire)
+                local root = getBikeRoot()
+                if root then
+                    if effInst.fire then effInst.fire:Destroy() end
+                    local fi = Instance.new('Fire')
+                    fi.Size=math.clamp(tonumber(fireSz.Text)or 5,1,30)
+                    fi.Heat=math.clamp(tonumber(fireHt.Text)or 9,0,25)
+                    fi.Parent=root; effInst.fire=fi
+                end
+            else
+                bcTogOff(togBtns.fire)
+                if effInst.fire then effInst.fire:Destroy(); effInst.fire=nil end
+            end
+        end)
+    end
+    do -- sparkles
+        local r = bcRow(30); bcLbl(r,'Sparkles:',8,5,62,20)
+        togBtns.spk = bcTog(r,72,4)
+        togBtns.spk.MouseButton1Click:Connect(function()
+            togState.spk = not togState.spk
+            if togState.spk then
+                bcTogOn(togBtns.spk)
+                local root = getBikeRoot()
+                if root then
+                    if effInst.sparkle then effInst.sparkle:Destroy() end
+                    local sp = Instance.new('Sparkles'); sp.Parent=root; effInst.sparkle=sp
+                end
+            else
+                bcTogOff(togBtns.spk)
+                if effInst.sparkle then effInst.sparkle:Destroy(); effInst.sparkle=nil end
+            end
+        end)
+    end
+    do -- forcefield
+        local r = bcRow(30); bcLbl(r,'ForceField (char):',8,5,122,20)
+        togBtns.ff = bcTog(r,132,4)
+        togBtns.ff.MouseButton1Click:Connect(function()
+            togState.ff = not togState.ff
+            if togState.ff then
+                bcTogOn(togBtns.ff)
+                local char = plr.Character
+                if char then
+                    if effInst.ff then effInst.ff:Destroy() end
+                    local f = Instance.new('ForceField'); f.Visible=true; f.Parent=char; effInst.ff=f
+                end
+            else
+                bcTogOff(togBtns.ff)
+                if effInst.ff then effInst.ff:Destroy(); effInst.ff=nil end
+            end
+        end)
+    end
+
+    -- ================================================================
+    -- ENGINE SOUND
+    -- ================================================================
+    do
+        bcSecHdr('ENGINE SOUND')
+        local r0 = bcRow(30); bcLbl(r0,'SoundId:',8,5,58,20)
+        local sndId = bcInp(r0,'rbxassetid://0',68,4,300,22)
+        local r1 = bcRow(30); bcLbl(r1,'Volume:',8,5,52,20)
+        local sndVol = bcInp(r1,'1.0',62,4,50,22); bcLbl(r1,'Speed:',116,5,44,20)
+        local sndSp  = bcInp(r1,'1.0',162,4,50,22)
+        local r2 = bcRow(30); bcLbl(r2,'Loop:',8,5,40,20)
+        togBtns.sndLoop = bcTog(r2,50,4)
+        togBtns.sndLoop.MouseButton1Click:Connect(function()
+            togState.sndLoop = not togState.sndLoop
+            if togState.sndLoop then bcTogOn(togBtns.sndLoop) else bcTogOff(togBtns.sndLoop) end
+        end)
+        local r3 = bcRow(30)
+        local applyBtn = bcBtn(r3,'Apply Sound',8,4,100,22)
+        local stopBtn  = bcBtn(r3,'Stop Sound',114,4,90,22)
+        applyBtn.MouseButton1Click:Connect(function()
+            local root = getBikeRoot()
+            if not root then showToast('Not on a bike'); return end
+            if effInst.snd then effInst.snd:Destroy() end
+            local s = Instance.new('Sound')
+            s.SoundId=sndId.Text
+            s.Volume=math.clamp(tonumber(sndVol.Text)or 1,0,10)
+            s.PlaybackSpeed=math.clamp(tonumber(sndSp.Text)or 1,0,5)
+            s.Looped=togState.sndLoop; s.Parent=root; s:Play(); effInst.snd=s
+            showToast('Sound playing')
+        end)
+        stopBtn.MouseButton1Click:Connect(function()
+            if effInst.snd then effInst.snd:Stop(); effInst.snd:Destroy(); effInst.snd=nil end
+            showToast('Sound stopped')
+        end)
+    end
+
+    -- ================================================================
+    -- DECALS
+    -- ================================================================
+    do
+        bcSecHdr('DECALS')
+        local r0 = bcRow(30); bcLbl(r0,'TextureId:',8,5,66,20)
+        local dclId = bcInp(r0,'rbxassetid://0',76,4,300,22)
+        local r1 = bcRow(30)
+        local applyBtn  = bcBtn(r1,'Apply Decals',8,4,100,22)
+        local removeBtn = bcBtn(r1,'Remove Decals',114,4,110,22)
+        applyBtn.MouseButton1Click:Connect(function()
+            local texId = dclId.Text
+            if texId=='' or texId=='rbxassetid://0' then showToast('Enter a valid TextureId'); return end
+            local model = getTargetModel()
+            if not model then showToast('Not on a bike'); return end
+            for _, p in ipairs(model:GetDescendants()) do
+                if p:IsA('BasePart') then
+                    for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
+                        local d = Instance.new('Decal'); d.Texture=texId; d.Face=face; d.Parent=p
+                    end
+                end
+            end
+            showToast('Decals applied')
+        end)
+        removeBtn.MouseButton1Click:Connect(function()
+            local model = getTargetModel()
+            if not model then showToast('Not on a bike'); return end
+            for _, d in ipairs(model:GetDescendants()) do
+                if d:IsA('Decal') or d:IsA('Texture') then d:Destroy() end
+            end
+            showToast('Decals removed')
+        end)
+    end
+
+    -- ================================================================
+    -- RESET
+    -- ================================================================
+    do
+        bcSecHdr('RESET')
+        local r = bcRow(36)
+        local rstBtn = bcBtn(r,'Reset All Appearance',8,6,200,24)
+        rstBtn.BackgroundColor3 = Color3.fromRGB(160,40,40)
+        rstBtn.Font = Enum.Font.GothamBold
+        rstBtn.MouseButton1Click:Connect(function()
+            applyToAll(function(p)
+                p.Material=Enum.Material.SmoothPlastic; p.Transparency=0
+                p.Reflectance=0; p.CastShadow=true
+            end)
+            local model = getTargetModel()
+            if model then
+                for _, d in ipairs(model:GetDescendants()) do
+                    if d:IsA('PointLight') or d:IsA('SpotLight') or d:IsA('SurfaceLight')
+                    or d:IsA('Smoke') or d:IsA('Fire') or d:IsA('Sparkles')
+                    or d:IsA('Sound') or d:IsA('Decal') or d:IsA('Texture') then
+                        pcall(function() d:Destroy() end)
+                    end
+                end
+            end
+            if effInst.ff then effInst.ff:Destroy(); effInst.ff=nil end
+            effInst.headlight=nil; effInst.spotlights={}
+            effInst.smoke=nil; effInst.fire=nil; effInst.sparkle=nil; effInst.snd=nil
+            for k in pairs(togState) do togState[k]=false end
+            togState.shad=true
+            for _, btn in pairs(togBtns) do pcall(bcTogOff,btn) end
+            bcTogOn(togBtns.shad)
+            for _, mb in ipairs(matBtns) do mb.BackgroundColor3=BGSUB end
+            showToast('All appearance reset')
+        end)
+    end
 end
 
 -- ============================================================
@@ -5163,13 +4160,11 @@ _G.SMCleanup = function()
     -- disconnect all RunService connections
     for _, key in ipairs({'SpeedConn', 'BrakeConn', 'TurnConn', 'AnimConn', 'HitboxConn',
                           'AntiAdminConn', 'OptimizerConn',
-                          'FlyConn', 'AntiFallConn', 'AirConn',
+                          'FlyConn', 'AntiFallConn',
                           'RainbowConn', 'TrailColorConn',
                           'AdminESPConn', 'BikeESPConn', 'SpeedTagConn', 'SpeedTagLeaveConn',
-                          'JumpKeyConn',
-                          'RideoutLeaderConn', 'RideoutFollowConn', 'RideoutHUDConn',
-                          'RideoutWPUpdateConn', 'OwnershipConn',
-                          'FullMapKeyConn', 'FullMapDotConn'}) do
+                          'PlayerESPConn', 'PlayerESPCharConn',
+                          'JumpKeyConn'}) do
         if _G[key] then
             pcall(function() _G[key]:Disconnect() end)
             _G[key] = nil
@@ -5202,19 +4197,7 @@ _G.SMCleanup = function()
     pcall(clearAdminESP)
     pcall(clearBikeESP)
     pcall(clearSpeedTags)
-
-    -- cleanup rideout
-    pcall(_cleanLeaderESP)
-    pcall(_cleanLeaderTrail)
-    pcall(_cleanOwnership)
-    pcall(_clearRideoutWPs)
-    pcall(function() if _rideoutHudGui    then _rideoutHudGui:Destroy()    end end)
-    pcall(function() if _ownershipHudGui  then _ownershipHudGui:Destroy()  end end)
-    pcall(function() if _fullMapGui       then _fullMapGui:Destroy()       end end)
-    pcall(function() if rideoutWpGui      then rideoutWpGui:Destroy()      end end)
-    pcall(function() if _G.RideoutTrailA0 then _G.RideoutTrailA0:Destroy() end end)
-    pcall(function() if _G.RideoutTrailA1 then _G.RideoutTrailA1:Destroy() end end)
-    pcall(function() if _G.RideoutTrail   then _G.RideoutTrail:Destroy()   end end)
+    pcall(clearPlayerESP)
 
     -- unfreeze bike if still frozen
     if _G.FrozenBikeParts then
@@ -5231,3 +4214,22 @@ _G.SMCleanup = function()
     -- destroy LinoriaLib window
     pcall(function() Library.ScreenGui:Destroy() end)
 end
+
+-- ============================================================
+-- SETTINGS TAB (SaveManager + ThemeManager)
+-- Must come AFTER all Toggles/Options are registered
+-- ============================================================
+local SettingsLeft  = Tabs.Settings:AddLeftGroupbox('Config')
+local SettingsRight = Tabs.Settings:AddRightGroupbox('Theme')
+
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetFolder('Konstant')
+SaveManager:BuildConfigSection(SettingsLeft)
+
+ThemeManager:SetLibrary(Library)
+ThemeManager:SetFolder('Konstant')
+ThemeManager:ApplyToGroupbox(SettingsRight)
+
+-- Load autoload config last, after all UI elements exist
+SaveManager:LoadAutoloadConfig()
