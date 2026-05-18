@@ -30,12 +30,15 @@ local Window = Library:CreateWindow({
 local Tabs = {
     Main     = Window:AddTab('Main'),
     Troll    = Window:AddTab('Troll'),
+    Rideout  = Window:AddTab('Rideout'),
     Maps     = Window:AddTab('Maps'),
+    ESP      = Window:AddTab('ESP'),
     Settings = Window:AddTab('Settings')
 }
 
-local Left = Tabs.Main:AddLeftGroupbox('Money')
-local Right = Tabs.Main:AddRightGroupbox('Bikes')
+local Left     = Tabs.Main:AddLeftGroupbox('Money')
+local BikeLeft = Tabs.Main:AddLeftGroupbox('Bikes')
+local Right    = Tabs.Main:AddRightGroupbox('Mods')
 
 Left:AddInput('Amount', {
     Default = '10000',
@@ -231,7 +234,7 @@ Left:AddToggle('StreamOptimizer', {
     end
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Get All Bikes',
     Func = function()
         local bikes = RS.Bikes:GetChildren()
@@ -252,7 +255,7 @@ Right:AddButton({
     end
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Sell All Bikes',
     Func = function()
         local bikes = RS.Bikes:GetChildren()
@@ -269,23 +272,23 @@ Right:AddButton({
     end
 })
 
-Right:AddDivider()
+BikeLeft:AddDivider()
 
-Right:AddInput('SpeedInput', {
+BikeLeft:AddInput('SpeedInput', {
     Default = '60',
     Numeric = true,
     Finished = false,
     Text = 'Max Speed (mph)',
 })
 
-Right:AddInput('AccelInput', {
+BikeLeft:AddInput('AccelInput', {
     Default = '37',
     Numeric = true,
     Finished = false,
     Text = 'Acceleration (mph/s)',
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Unpatch Bike',
     Func = function()
         if _G.SpeedConn then
@@ -298,7 +301,7 @@ Right:AddButton({
     end
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Patch Bike',
     Func = function()
         local RS2  = game:GetService('RunService')
@@ -354,14 +357,14 @@ Right:AddButton({
     end
 })
 
-Right:AddDivider()
+BikeLeft:AddDivider()
 
-Right:AddToggle('SpawnerToggle', {
+BikeLeft:AddToggle('SpawnerToggle', {
     Text = 'Toggle Spawner',
     Default = false,
 })
 
-Right:AddDivider()
+BikeLeft:AddDivider()
 
 -- forward-declared so HitboxViewer toggle (defined in this groupbox) and
 -- the Troll section (which does the full definitions) share the same upvalues
@@ -370,14 +373,13 @@ local clearHitboxes  = nil
 local refreshHitboxes = nil
 
 local function getBikeRoot()
+    -- O(1): Humanoid.SeatPart is always the current VehicleSeat (no workspace scan)
     local char = plr.Character
-    if not char then return nil, nil end
-    for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA('VehicleSeat') and v.Occupant and v.Occupant.Parent == char then
-            return v.Parent, v.Parent:FindFirstChildWhichIsA('BasePart')
-        end
-    end
-    return nil, nil
+    local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+    if not hum then return nil, nil end
+    local seat = hum.SeatPart
+    if not seat or not seat:IsA('VehicleSeat') then return nil, nil end
+    return seat.Parent, seat.Parent:FindFirstChildWhichIsA('BasePart')
 end
 
 -- scans once and returns root; on heartbeat only rescans if root went nil
@@ -387,14 +389,14 @@ local function cachedRoot(stored)
     return r
 end
 
-Right:AddInput('GravityInput', {
+BikeLeft:AddInput('GravityInput', {
     Default = '196.2',
     Numeric = true,
     Finished = false,
     Text = 'Gravity (default 196.2)',
 })
 
-Right:AddToggle('CustomGravity', {
+BikeLeft:AddToggle('CustomGravity', {
     Text = 'Custom Gravity',
     Default = false,
     Callback = function(val)
@@ -410,16 +412,16 @@ Right:AddToggle('CustomGravity', {
     end
 })
 
-Right:AddDivider()
+BikeLeft:AddDivider()
 
-Right:AddInput('BrakeInput', {
+BikeLeft:AddInput('BrakeInput', {
     Default = '120',
     Numeric = true,
     Finished = false,
     Text = 'Brake Force (mph/s)',
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Unpatch Brake',
     Func = function()
         if _G.BrakeConn then
@@ -432,7 +434,7 @@ Right:AddButton({
     end
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Patch Brake',
     Func = function()
         local RS2  = game:GetService('RunService')
@@ -485,16 +487,16 @@ Right:AddButton({
     end
 })
 
-Right:AddDivider()
+BikeLeft:AddDivider()
 
-Right:AddInput('TurnInput', {
+BikeLeft:AddInput('TurnInput', {
     Default = '90',
     Numeric = true,
     Finished = false,
     Text = 'Turn Speed (deg/s)',
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Unpatch Turn',
     Func = function()
         if _G.TurnConn then
@@ -507,7 +509,7 @@ Right:AddButton({
     end
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Patch Turn',
     Func = function()
         local RS2  = game:GetService('RunService')
@@ -556,23 +558,23 @@ Right:AddButton({
     end
 })
 
-Right:AddDivider()
+BikeLeft:AddDivider()
 
-Right:AddInput('AnimSpeedInput', {
+BikeLeft:AddInput('AnimSpeedInput', {
     Default = '1.0',
     Numeric = true,
     Finished = false,
     Text = 'Anim Speed (multiplier)',
 })
 
-Right:AddInput('AnimFadeInput', {
+BikeLeft:AddInput('AnimFadeInput', {
     Default = '0.3',
     Numeric = true,
     Finished = false,
     Text = 'Anim Transition (seconds)',
 })
 
-Right:AddToggle('AnimTweaks', {
+BikeLeft:AddToggle('AnimTweaks', {
     Text = 'Anim Tweaks (bike only)',
     Default = false,
     Callback = function(val)
@@ -671,7 +673,7 @@ Right:AddToggle('AnimTweaks', {
     end
 })
 
-Right:AddToggle('HitboxViewer', {
+BikeLeft:AddToggle('HitboxViewer', {
     Text = 'Hitbox Viewer',
     Default = false,
     Callback = function(val)
@@ -689,7 +691,7 @@ Right:AddToggle('HitboxViewer', {
     end
 })
 
-Right:AddButton({
+BikeLeft:AddButton({
     Text = 'Kill Velocity',
     Func = function()
         local char = plr.Character
@@ -708,6 +710,324 @@ Right:AddButton({
             end
         end
         showToast('Velocity killed')
+    end
+})
+
+-- trail settings shared between the toggle and the settings panel
+local trailSettings = {
+    startR = 255, startG = 215, startB = 0,
+    endR   = 200, endG   = 100, endB   = 0,
+    lifetime      = 0.6,
+    halfWidth     = 0.5,
+    textureId     = '',
+    lightEmission = 0.5,
+    rainbow       = false,
+}
+local trailGui    = nil  -- assigned when trail panel is built below
+local bikeCustGui = nil  -- assigned when bike customization panel is built below
+
+Right:AddDivider()
+
+-- ---- Freeze Bike -------------------------------------------------------
+Right:AddToggle('FreezeBike', {
+    Text = 'Freeze Bike',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local bikeModel = getBikeRoot()
+            if not bikeModel then
+                showToast('Get on a bike first')
+                Toggles.FreezeBike:SetValue(false)
+                return
+            end
+            _G.FrozenBikeParts = {}
+            for _, p in ipairs(bikeModel:GetDescendants()) do
+                if p:IsA('BasePart') then
+                    _G.FrozenBikeParts[p] = p.AssemblyLinearVelocity
+                    p.Anchored = true
+                end
+            end
+            showToast('Bike frozen')
+        else
+            if _G.FrozenBikeParts then
+                for p, vel in pairs(_G.FrozenBikeParts) do
+                    pcall(function()
+                        p.Anchored = false
+                        p.AssemblyLinearVelocity = vel
+                    end)
+                end
+                _G.FrozenBikeParts = nil
+            end
+            showToast('Bike unfrozen')
+        end
+    end
+})
+
+-- ---- Fly Mode ----------------------------------------------------------
+Right:AddInput('FlySpeedInput', {
+    Default = '60',
+    Numeric = true,
+    Finished = false,
+    Text = 'Fly Speed (studs/s)',
+})
+
+Right:AddToggle('FlyMode', {
+    Text = 'Fly Mode (WASD + E up / Q down)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local RS2 = game:GetService('RunService')
+            local flyRoot = nil
+            _G.FlyConn = RS2.Heartbeat:Connect(function()
+                local _, r = getBikeRoot()
+                if r then flyRoot = r end
+                if not flyRoot or not flyRoot.Parent then return end
+                local cam   = workspace.CurrentCamera
+                local speed = (tonumber(Options.FlySpeedInput.Value) or 60) * 1.6
+                local fwd   = cam.CFrame.LookVector
+                local right = cam.CFrame.RightVector
+                local dir   = Vector3.new(0, 0, 0)
+                if UIS:IsKeyDown(Enum.KeyCode.W)         then dir = dir + fwd                end
+                if UIS:IsKeyDown(Enum.KeyCode.S)         then dir = dir - fwd                end
+                if UIS:IsKeyDown(Enum.KeyCode.A)         then dir = dir - right              end
+                if UIS:IsKeyDown(Enum.KeyCode.D)         then dir = dir + right              end
+                if UIS:IsKeyDown(Enum.KeyCode.E)         then dir = dir + Vector3.new(0,1,0) end
+                if UIS:IsKeyDown(Enum.KeyCode.Q)         then dir = dir - Vector3.new(0,1,0) end
+                if dir.Magnitude > 0.01 then
+                    flyRoot.AssemblyLinearVelocity = dir.Unit * speed
+                else
+                    local vel = flyRoot.AssemblyLinearVelocity
+                    flyRoot.AssemblyLinearVelocity = Vector3.new(vel.X * 0.8, 0, vel.Z * 0.8)
+                end
+            end)
+            showToast('Fly ON  (WASD move, E up, Q down)')
+        else
+            if _G.FlyConn then _G.FlyConn:Disconnect(); _G.FlyConn = nil end
+            showToast('Fly OFF')
+        end
+    end
+})
+
+-- ---- Anti-Fall ---------------------------------------------------------
+Right:AddToggle('AntiFall', {
+    Text = 'Anti-Fall  (WHEELIE IS BROKEN)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local RS2 = game:GetService('RunService')
+            local afRoot = nil
+            _G.AntiFallConn = RS2.Heartbeat:Connect(function()
+                afRoot = cachedRoot(afRoot)
+                if not afRoot then return end
+                local cf  = afRoot.CFrame
+                local lv  = cf.LookVector
+                local yaw = math.atan2(-lv.X, -lv.Z)
+                afRoot.CFrame = CFrame.new(cf.Position) * CFrame.Angles(0, yaw, 0)
+            end)
+            showToast('Anti-Fall ON  (wheelies disabled)')
+        else
+            if _G.AntiFallConn then _G.AntiFallConn:Disconnect(); _G.AntiFallConn = nil end
+            showToast('Anti-Fall OFF')
+        end
+    end
+})
+
+Right:AddDivider()
+
+-- ---- Jump Key ----------------------------------------------------------
+Right:AddInput('JumpForceInput', {
+    Default = '80',
+    Numeric = true,
+    Finished = false,
+    Text = 'Jump Force (studs/s)',
+})
+
+Right:AddInput('JumpKeyInput', {
+    Default  = 'G',
+    Numeric  = false,
+    Finished = false,
+    Text     = 'Jump Key (e.g. G, H, F)',
+})
+
+local _lastJump = 0
+_G.JumpKeyConn = UIS.InputBegan:Connect(function(inp, gp)
+    if gp then return end
+    if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    local keyStr = (Options.JumpKeyInput and Options.JumpKeyInput.Value or 'G'):upper():gsub('%s+', '')
+    local ok, kc = pcall(function() return Enum.KeyCode[keyStr] end)
+    if not ok or kc == nil then return end
+    if inp.KeyCode ~= kc then return end
+    local now = tick()
+    if now - _lastJump < 0.3 then return end
+    _lastJump = now
+    local _, bikeRoot = getBikeRoot()
+    if not bikeRoot then return end
+    local force = tonumber(Options.JumpForceInput.Value) or 80
+    local vel   = bikeRoot.AssemblyLinearVelocity
+    bikeRoot.AssemblyLinearVelocity = Vector3.new(vel.X, vel.Y + force, vel.Z)
+end)
+
+Right:AddDivider()
+
+-- ---- Air Control -------------------------------------------------------
+Right:AddInput('AirControlInput', {
+    Default = '40',
+    Numeric = true,
+    Finished = false,
+    Text = 'Air Control Force',
+})
+
+Right:AddToggle('AirControl', {
+    Text = 'Air Control (A/D mid-air)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local RS2 = game:GetService('RunService')
+            local airRoot = nil
+            _G.AirConn = RS2.Heartbeat:Connect(function(dt)
+                airRoot = cachedRoot(airRoot)
+                if not airRoot then return end
+                local aDown = UIS:IsKeyDown(Enum.KeyCode.A)
+                local dDown = UIS:IsKeyDown(Enum.KeyCode.D)
+                if not aDown and not dDown then return end
+                local hit = workspace:Raycast(airRoot.Position, Vector3.new(0, -4, 0))
+                if hit then return end
+                local force    = tonumber(Options.AirControlInput.Value) or 40
+                local rightVec = airRoot.CFrame.RightVector
+                rightVec = Vector3.new(rightVec.X, 0, rightVec.Z)
+                if rightVec.Magnitude < 0.01 then return end
+                rightVec = rightVec.Unit
+                local dir = aDown and -1 or 1
+                airRoot.AssemblyLinearVelocity = airRoot.AssemblyLinearVelocity + rightVec * dir * force * dt
+            end)
+            showToast('Air Control ON')
+        else
+            if _G.AirConn then _G.AirConn:Disconnect(); _G.AirConn = nil end
+            showToast('Air Control OFF')
+        end
+    end
+})
+
+Right:AddDivider()
+
+-- ---- Rainbow Bike / Custom Color ---------------------------------------
+Right:AddInput('RainbowSpeedInput', {
+    Default = '0.4',
+    Numeric = true,
+    Finished = false,
+    Text = 'Rainbow Speed',
+})
+
+Right:AddToggle('RainbowBike', {
+    Text = 'Rainbow Bike',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local RS2 = game:GetService('RunService')
+            local hue = 0
+            local rainbowRoot = nil
+            _G.RainbowConn = RS2.Heartbeat:Connect(function(dt)
+                rainbowRoot = cachedRoot(rainbowRoot)
+                if not rainbowRoot then return end
+                local bikeModel = rainbowRoot.Parent
+                if not bikeModel then return end
+                local speed = tonumber(Options.RainbowSpeedInput.Value) or 0.4
+                hue = (hue + dt * speed) % 1
+                local col = Color3.fromHSV(hue, 1, 1)
+                for _, p in ipairs(bikeModel:GetDescendants()) do
+                    if p:IsA('BasePart') then pcall(function() p.Color = col end) end
+                end
+            end)
+            showToast('Rainbow ON')
+        else
+            if _G.RainbowConn then _G.RainbowConn:Disconnect(); _G.RainbowConn = nil end
+            showToast('Rainbow OFF')
+        end
+    end
+})
+
+Right:AddDivider()
+
+Right:AddButton({
+    Text = 'Bike Customization',
+    Func = function()
+        if bikeCustGui then bikeCustGui.Enabled = not bikeCustGui.Enabled end
+    end
+})
+
+Right:AddDivider()
+
+-- ---- Bike Trail --------------------------------------------------------
+Right:AddToggle('BikeTrail', {
+    Text = 'Bike Trail',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local _, bikeRoot = getBikeRoot()
+            if not bikeRoot then showToast('Get on a bike first') return end
+            pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy() end end)
+            pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy() end end)
+            pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy()  end end)
+            local hw = math.max(0.05, trailSettings.halfWidth)
+            local a0 = Instance.new('Attachment')
+            a0.Position = Vector3.new(0,  hw, 0)
+            a0.Parent   = bikeRoot
+            local a1 = Instance.new('Attachment')
+            a1.Position = Vector3.new(0, -hw, 0)
+            a1.Parent   = bikeRoot
+            local trail = Instance.new('Trail')
+            trail.Attachment0   = a0
+            trail.Attachment1   = a1
+            trail.Lifetime      = trailSettings.lifetime
+            trail.MinLength     = 0
+            trail.FaceCamera    = true
+            trail.LightEmission = trailSettings.lightEmission
+            trail.Texture       = trailSettings.textureId
+            trail.Transparency  = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0),
+                NumberSequenceKeypoint.new(1, 1),
+            })
+            trail.Parent     = bikeRoot.Parent
+            _G.TrailAttach0  = a0
+            _G.TrailAttach1  = a1
+            _G.ActiveTrail   = trail
+            _G.TrailBikeRoot = bikeRoot
+            local frameTick = 0
+            local RS2 = game:GetService('RunService')
+            _G.TrailColorConn = RS2.Heartbeat:Connect(function()
+                frameTick += 1
+                if frameTick < 3 then return end
+                frameTick = 0
+                if not _G.ActiveTrail or not _G.ActiveTrail.Parent then return end
+                if trailSettings.rainbow or Toggles.RainbowBike.Value then
+                    if _G.TrailBikeRoot and _G.TrailBikeRoot.Parent then
+                        _G.ActiveTrail.Color = ColorSequence.new(_G.TrailBikeRoot.Color)
+                    end
+                else
+                    local sc = Color3.fromRGB(trailSettings.startR, trailSettings.startG, trailSettings.startB)
+                    local ec = Color3.fromRGB(trailSettings.endR,   trailSettings.endG,   trailSettings.endB)
+                    _G.ActiveTrail.Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, sc),
+                        ColorSequenceKeypoint.new(1, ec),
+                    })
+                end
+            end)
+            showToast('Trail ON')
+        else
+            if _G.TrailColorConn then _G.TrailColorConn:Disconnect(); _G.TrailColorConn = nil end
+            pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy(); _G.TrailAttach0 = nil end end)
+            pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy(); _G.TrailAttach1 = nil end end)
+            pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy();  _G.ActiveTrail  = nil end end)
+            _G.TrailBikeRoot = nil
+            showToast('Trail OFF')
+        end
+    end
+})
+
+Right:AddButton({
+    Text = 'Trail Settings',
+    Func = function()
+        if trailGui then trailGui.Enabled = not trailGui.Enabled end
     end
 })
 
@@ -1799,6 +2119,1288 @@ TrollLeft:AddToggle('TouchFling', {
 })
 
 -- ============================================================
+-- ESP TAB
+-- ============================================================
+
+local ESPLeft = Tabs.ESP:AddLeftGroupbox('ESP')
+
+ESPLeft:AddInput('AdminNames', {
+    Default  = '',
+    Numeric  = false,
+    Finished = false,
+    Text     = 'Admin Names (comma-sep)',
+})
+
+local function isAdmin(player)
+    if player.UserId == game.CreatorId then return true end
+    local input = Options.AdminNames and Options.AdminNames.Value or ''
+    for name in (input .. ','):gmatch('([^,]+),') do
+        name = name:match('^%s*(.-)%s*$')
+        if name ~= '' and player.Name:lower():find(name:lower(), 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local adminBoxMap = {}
+local function clearAdminESP()
+    for _, data in pairs(adminBoxMap) do
+        pcall(function() if data.box  then data.box:Destroy()  end end)
+        pcall(function() if data.bill then data.bill:Destroy() end end)
+    end
+    adminBoxMap = {}
+end
+
+local function refreshAdminESP()
+    clearAdminESP()
+    if not Toggles.AdminESP or not Toggles.AdminESP.Value then return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == plr then continue end
+        if not isAdmin(p) then continue end
+        local char = p.Character
+        if not char then continue end
+        local hrp = char:FindFirstChild('HumanoidRootPart')
+        if not hrp then continue end
+        local box = Instance.new('SelectionBox')
+        box.Color3        = Color3.fromRGB(255, 50, 50)
+        box.LineThickness = 0.07
+        box.Adornee       = char
+        box.Parent        = workspace
+        local bill = Instance.new('BillboardGui')
+        bill.AlwaysOnTop = true
+        bill.Size        = UDim2.new(0, 180, 0, 26)
+        bill.StudsOffset = Vector3.new(0, 3.5, 0)
+        bill.Adornee     = hrp
+        bill.Parent      = workspace
+        local lbl = Instance.new('TextLabel')
+        lbl.Size                   = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text                   = '[ADMIN] ' .. p.Name
+        lbl.TextColor3             = Color3.fromRGB(255, 80, 80)
+        lbl.Font                   = Enum.Font.GothamBold
+        lbl.TextSize               = 14
+        lbl.TextStrokeTransparency = 0.5
+        lbl.Parent                 = bill
+        adminBoxMap[p.UserId] = { box=box, bill=bill }
+    end
+end
+
+ESPLeft:AddToggle('AdminESP', {
+    Text = 'Admin ESP',
+    Default = false,
+    Callback = function(val)
+        if val then
+            refreshAdminESP()
+            local timer = 0
+            _G.AdminESPConn = game:GetService('RunService').Heartbeat:Connect(function()
+                timer += 1
+                if timer >= 120 then timer = 0; refreshAdminESP() end
+            end)
+            showToast('Admin ESP ON')
+        else
+            clearAdminESP()
+            if _G.AdminESPConn then _G.AdminESPConn:Disconnect(); _G.AdminESPConn = nil end
+            showToast('Admin ESP OFF')
+        end
+    end
+})
+
+ESPLeft:AddButton({
+    Text = 'Refresh Admin ESP',
+    Func = function()
+        refreshAdminESP()
+        showToast('Admin ESP refreshed')
+    end
+})
+
+ESPLeft:AddDivider()
+
+local bikeBoxMap = {}
+local function clearBikeESP()
+    for _, data in pairs(bikeBoxMap) do
+        pcall(function() if data.box  then data.box:Destroy()  end end)
+        pcall(function() if data.bill then data.bill:Destroy() end end)
+    end
+    bikeBoxMap = {}
+end
+
+local function refreshBikeESP()
+    clearBikeESP()
+    if not Toggles.BikeESP or not Toggles.BikeESP.Value then return end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if not obj:IsA('VehicleSeat') then continue end
+        local model = obj.Parent
+        if not model then continue end
+        local ownerName = 'Unoccupied'
+        if obj.Occupant then
+            local char = obj.Occupant.Parent
+            if char then
+                local p = Players:GetPlayerFromCharacter(char)
+                if p then ownerName = p.Name end
+            end
+        end
+        local box = Instance.new('SelectionBox')
+        box.Color3        = Color3.fromRGB(255, 200, 0)
+        box.LineThickness = 0.05
+        box.Adornee       = model
+        box.Parent        = workspace
+        local bill = Instance.new('BillboardGui')
+        bill.AlwaysOnTop = true
+        bill.Size        = UDim2.new(0, 160, 0, 22)
+        bill.StudsOffset = Vector3.new(0, 4, 0)
+        bill.Adornee     = obj
+        bill.Parent      = workspace
+        local lbl = Instance.new('TextLabel')
+        lbl.Size                   = UDim2.new(1, 0, 1, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text                   = '[Bike] ' .. ownerName
+        lbl.TextColor3             = Color3.fromRGB(255, 200, 0)
+        lbl.Font                   = Enum.Font.Gotham
+        lbl.TextSize               = 13
+        lbl.TextStrokeTransparency = 0.5
+        lbl.Parent                 = bill
+        table.insert(bikeBoxMap, { box=box, bill=bill })
+    end
+end
+
+ESPLeft:AddToggle('BikeESP', {
+    Text = 'Bike ESP',
+    Default = false,
+    Callback = function(val)
+        if val then
+            refreshBikeESP()
+            local timer = 0
+            _G.BikeESPConn = game:GetService('RunService').Heartbeat:Connect(function()
+                timer += 1
+                if timer >= 60 then timer = 0; refreshBikeESP() end
+            end)
+            showToast('Bike ESP ON')
+        else
+            clearBikeESP()
+            if _G.BikeESPConn then _G.BikeESPConn:Disconnect(); _G.BikeESPConn = nil end
+            showToast('Bike ESP OFF')
+        end
+    end
+})
+
+ESPLeft:AddDivider()
+
+local speedTagMap = {}
+local function clearSpeedTags()
+    for _, data in pairs(speedTagMap) do
+        pcall(function() if data.bill then data.bill:Destroy() end end)
+    end
+    speedTagMap = {}
+end
+
+local function getOrCreateTag(player)
+    if speedTagMap[player.UserId] then return speedTagMap[player.UserId] end
+    local char = player.Character
+    if not char then return nil end
+    local hrp = char:FindFirstChild('HumanoidRootPart')
+    if not hrp then return nil end
+    local bill = Instance.new('BillboardGui')
+    bill.AlwaysOnTop = false
+    bill.MaxDistance = 150
+    bill.Size        = UDim2.new(0, 160, 0, 22)
+    bill.StudsOffset = Vector3.new(0, 3, 0)
+    bill.Adornee     = hrp
+    bill.Parent      = workspace
+    local lbl = Instance.new('TextLabel')
+    lbl.Size                   = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text                   = player.Name .. ' -- 0 mph'
+    lbl.TextColor3             = Color3.fromRGB(200, 255, 200)
+    lbl.Font                   = Enum.Font.Gotham
+    lbl.TextSize               = 13
+    lbl.TextStrokeTransparency = 0.5
+    lbl.Parent                 = bill
+    local data = { bill=bill, label=lbl, hrp=hrp }
+    speedTagMap[player.UserId] = data
+    return data
+end
+
+ESPLeft:AddToggle('SpeedNametags', {
+    Text = 'Speed Nametags',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local RS2 = game:GetService('RunService')
+            _G.SpeedTagConn = RS2.Heartbeat:Connect(function()
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p == plr then continue end
+                    local data = getOrCreateTag(p)
+                    if not data then continue end
+                    if not data.hrp or not data.hrp.Parent then
+                        pcall(function() if data.bill then data.bill:Destroy() end end)
+                        speedTagMap[p.UserId] = nil
+                        continue
+                    end
+                    local mph = math.floor(data.hrp.AssemblyLinearVelocity.Magnitude * 0.625 + 0.5)
+                    data.label.Text = p.Name .. ' -- ' .. mph .. ' mph'
+                end
+            end)
+            _G.SpeedTagLeaveConn = Players.PlayerRemoving:Connect(function(p)
+                local data = speedTagMap[p.UserId]
+                if data then
+                    pcall(function() data.bill:Destroy() end)
+                    speedTagMap[p.UserId] = nil
+                end
+            end)
+            showToast('Speed Nametags ON')
+        else
+            clearSpeedTags()
+            if _G.SpeedTagConn      then _G.SpeedTagConn:Disconnect();      _G.SpeedTagConn      = nil end
+            if _G.SpeedTagLeaveConn then _G.SpeedTagLeaveConn:Disconnect(); _G.SpeedTagLeaveConn = nil end
+            showToast('Speed Nametags OFF')
+        end
+    end
+})
+
+-- ============================================================
+-- RIDEOUT TAB
+-- ============================================================
+
+local RideoutLeft  = Tabs.Rideout:AddLeftGroupbox('Rideout')
+local RideoutRight = Tabs.Rideout:AddRightGroupbox('Leader')
+
+-- rideout state
+local _rideoutActive    = false
+local _rideoutLeader    = nil
+local _leaderBox        = nil
+local _leaderBill       = nil
+local _rideoutHudGui    = nil
+local _selfLeaderBox    = nil  -- yellow SelectionBox on own character (Claim Ownership)
+local _ownershipActive  = false
+local _ownershipHudGui  = nil  -- top-of-screen rider count banner
+
+-- rideout waypoint state
+local rideoutWPs      = {}
+local nextRoWpId      = 1
+local rideoutWpGui    = nil  -- list panel, assigned after tab buttons
+local _addRoWpRow     = nil  -- forward declaration
+local _reflowRoWpRows = nil  -- forward declaration
+
+local function _parseXYZ(str)
+    -- accepts:  "100, 50, 200"  or  "CFrame.new(100, 50, 200, ...)"
+    local nums = {}
+    for n in str:gmatch('%-?%d+%.?%d*') do
+        table.insert(nums, tonumber(n))
+        if #nums == 3 then break end
+    end
+    if #nums == 3 then return nums[1], nums[2], nums[3] end
+    return nil
+end
+
+local function _makeRideoutWP(name, wx, wy, wz)
+    local id = nextRoWpId
+    nextRoWpId += 1
+
+    local beamPart = Instance.new('Part')
+    beamPart.Size         = Vector3.new(0.6, 500, 0.6)
+    beamPart.CFrame       = CFrame.new(wx, wy + 250, wz)
+    beamPart.Anchored     = true
+    beamPart.CanCollide   = false
+    beamPart.Material     = Enum.Material.Neon
+    beamPart.Color        = Color3.fromRGB(50, 255, 80)
+    beamPart.Transparency = 0.35
+    beamPart.CastShadow   = false
+    beamPart.Parent       = workspace
+
+    local topPart = Instance.new('Part')
+    topPart.Size        = Vector3.new(1, 1, 1)
+    topPart.CFrame      = CFrame.new(wx, wy + 515, wz)
+    topPart.Anchored    = true
+    topPart.CanCollide  = false
+    topPart.Transparency = 1
+    topPart.Parent      = workspace
+
+    local billboard = Instance.new('BillboardGui')
+    billboard.Size        = UDim2.new(0, 280, 0, 80)
+    billboard.AlwaysOnTop = false
+    billboard.MaxDistance = 6000
+    billboard.Parent      = topPart
+
+    local bbName = Instance.new('TextLabel')
+    bbName.Size                   = UDim2.new(1, 0, 0.6, 0)
+    bbName.BackgroundTransparency = 1
+    bbName.Text                   = name
+    bbName.TextColor3             = Color3.fromRGB(50, 255, 80)
+    bbName.Font                   = Enum.Font.GothamBold
+    bbName.TextSize               = 30
+    bbName.TextScaled             = false
+    bbName.TextStrokeTransparency = 0.25
+    bbName.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
+    bbName.Parent                 = billboard
+
+    local bbDist = Instance.new('TextLabel')
+    bbDist.Size                   = UDim2.new(1, 0, 0.4, 0)
+    bbDist.Position               = UDim2.new(0, 0, 0.6, 0)
+    bbDist.BackgroundTransparency = 1
+    bbDist.TextColor3             = Color3.fromRGB(160, 255, 160)
+    bbDist.Font                   = Enum.Font.Gotham
+    bbDist.TextSize               = 20
+    bbDist.TextStrokeTransparency = 0.3
+    bbDist.TextStrokeColor3       = Color3.fromRGB(0, 0, 0)
+    bbDist.Parent                 = billboard
+
+    local wp = {id=id, name=name, x=wx, y=wy, z=wz,
+                beamPart=beamPart, topPart=topPart,
+                bbName=bbName, bbDist=bbDist, row=nil}
+    rideoutWPs[id] = wp
+
+    -- distance label updater (shared heartbeat)
+    if not _G.RideoutWPUpdateConn then
+        local RS2 = game:GetService('RunService')
+        _G.RideoutWPUpdateConn = RS2.Heartbeat:Connect(function()
+            local myChar = plr.Character
+            local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
+            for _, w in pairs(rideoutWPs) do
+                if w.bbDist and w.bbDist.Parent then
+                    if myHRP then
+                        local d = math.floor((myHRP.Position - Vector3.new(w.x, w.y, w.z)).Magnitude + 0.5)
+                        w.bbDist.Text = d .. ' m'
+                    else
+                        w.bbDist.Text = ''
+                    end
+                end
+            end
+        end)
+    end
+
+    -- add row to panel if it's already open
+    if rideoutWpGui and _addRoWpRow then
+        local panel = rideoutWpGui:FindFirstChildWhichIsA('Frame')
+        local scroll = panel and panel:FindFirstChild('Scroll')
+        if scroll then _addRoWpRow(wp, scroll) end
+    end
+
+    showToast(name .. ' placed')
+    return wp
+end
+
+local function _clearRideoutWPs()
+    for _, wp in pairs(rideoutWPs) do
+        pcall(function() if wp.beamPart and wp.beamPart.Parent then wp.beamPart:Destroy() end end)
+        pcall(function() if wp.topPart  and wp.topPart.Parent  then wp.topPart:Destroy()  end end)
+        pcall(function() if wp.row      and wp.row.Parent      then wp.row:Destroy()      end end)
+    end
+    rideoutWPs  = {}
+    nextRoWpId  = 1
+    if _G.RideoutWPUpdateConn then _G.RideoutWPUpdateConn:Disconnect(); _G.RideoutWPUpdateConn = nil end
+end
+
+local function _cleanOwnership()
+    _ownershipActive = false
+    if _selfLeaderBox then
+        pcall(function() _selfLeaderBox:Destroy() end)
+        _selfLeaderBox = nil
+    end
+    if _ownershipHudGui then
+        _ownershipHudGui.Enabled = false
+    end
+    if _G.OwnershipConn then _G.OwnershipConn:Disconnect(); _G.OwnershipConn = nil end
+end
+
+local function _cleanLeaderESP()
+    if _leaderBox  then pcall(function() _leaderBox:Destroy()  end); _leaderBox  = nil end
+    if _leaderBill then pcall(function() _leaderBill:Destroy() end); _leaderBill = nil end
+end
+
+local function _cleanLeaderTrail()
+    if _G.RideoutTrailA0 then pcall(function() _G.RideoutTrailA0:Destroy() end); _G.RideoutTrailA0 = nil end
+    if _G.RideoutTrailA1 then pcall(function() _G.RideoutTrailA1:Destroy() end); _G.RideoutTrailA1 = nil end
+    if _G.RideoutTrail   then pcall(function() _G.RideoutTrail:Destroy()   end); _G.RideoutTrail   = nil end
+end
+
+local function _applyLeaderESP(p)
+    _cleanLeaderESP()
+    local char = p.Character
+    if not char then return end
+    local hrp = char:FindFirstChild('HumanoidRootPart')
+    if not hrp then return end
+    local box = Instance.new('SelectionBox')
+    box.Color3        = Color3.fromRGB(50, 255, 80)
+    box.LineThickness = 0.08
+    box.SurfaceTransparency = 0.85
+    box.SurfaceColor3 = Color3.fromRGB(50, 255, 80)
+    box.Adornee       = char
+    box.Parent        = workspace
+    _leaderBox = box
+    local bill = Instance.new('BillboardGui')
+    bill.AlwaysOnTop = true
+    bill.Size        = UDim2.new(0, 180, 0, 26)
+    bill.StudsOffset = Vector3.new(0, 4.5, 0)
+    bill.Adornee     = hrp
+    bill.Parent      = workspace
+    local lbl = Instance.new('TextLabel')
+    lbl.Size                   = UDim2.new(1, 0, 1, 0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text                   = '[LEADER] ' .. p.Name
+    lbl.TextColor3             = Color3.fromRGB(50, 255, 80)
+    lbl.Font                   = Enum.Font.GothamBold
+    lbl.TextSize               = 14
+    lbl.TextStrokeTransparency = 0.4
+    lbl.Parent                 = bill
+    _leaderBill = bill
+end
+
+local function _applyLeaderTrail(p)
+    _cleanLeaderTrail()
+    local char = p.Character
+    if not char then return end
+    local hrp = char:FindFirstChild('HumanoidRootPart')
+    if not hrp then return end
+    local a0 = Instance.new('Attachment')
+    a0.Position = Vector3.new(0, 0.6, 0)
+    a0.Parent   = hrp
+    local a1 = Instance.new('Attachment')
+    a1.Position = Vector3.new(0, -0.6, 0)
+    a1.Parent   = hrp
+    local trail = Instance.new('Trail')
+    trail.Attachment0   = a0
+    trail.Attachment1   = a1
+    trail.Lifetime      = 600
+    trail.MinLength     = 0
+    trail.FaceCamera    = true
+    trail.LightEmission = 0.9
+    trail.Color         = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(50, 255, 80)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(0,  160, 50)),
+    })
+    trail.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(1, 0.3),
+    })
+    trail.Parent     = workspace
+    _G.RideoutTrailA0 = a0
+    _G.RideoutTrailA1 = a1
+    _G.RideoutTrail   = trail
+end
+
+-- Start / Stop Rideout
+RideoutLeft:AddButton({
+    Text = 'Start Rideout',
+    Func = function()
+        _rideoutActive = true
+        showToast('Rideout started')
+    end
+})
+
+RideoutLeft:AddButton({
+    Text = 'Stop Rideout',
+    Func = function()
+        _rideoutActive = false
+        _rideoutLeader = nil
+        _cleanLeaderESP()
+        _cleanLeaderTrail()
+        _cleanOwnership()
+        if _G.RideoutLeaderConn  then _G.RideoutLeaderConn:Disconnect();  _G.RideoutLeaderConn  = nil end
+        if _G.RideoutFollowConn  then _G.RideoutFollowConn:Disconnect();  _G.RideoutFollowConn  = nil end
+        if _G.RideoutHUDConn     then _G.RideoutHUDConn:Disconnect();     _G.RideoutHUDConn     = nil end
+        if _rideoutHudGui        then _rideoutHudGui.Enabled = false end
+        showToast('Rideout stopped')
+    end
+})
+
+RideoutLeft:AddButton({
+    Text = 'Claim Ownership (set yourself as leader)',
+    Func = function()
+        if _ownershipActive then
+            _cleanOwnership()
+            showToast('Ownership released')
+            return
+        end
+
+        local myChar = plr.Character
+        if not myChar then showToast('Get in-game first'); return end
+
+        _ownershipActive = true
+
+        -- yellow SelectionBox on own character
+        local box = Instance.new('SelectionBox')
+        box.Color3               = Color3.fromRGB(255, 210, 0)
+        box.LineThickness        = 0.09
+        box.SurfaceTransparency  = 0.8
+        box.SurfaceColor3        = Color3.fromRGB(255, 210, 0)
+        box.Adornee              = myChar
+        box.Parent               = workspace
+        _selfLeaderBox           = box
+
+        -- build the top-center rider count HUD if it doesn't exist yet
+        if not _ownershipHudGui then
+            local hg = Instance.new('ScreenGui')
+            hg.Name           = 'OwnershipHudGui'
+            hg.ResetOnSpawn   = false
+            hg.DisplayOrder   = 215
+            hg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+            hg.Parent         = plr.PlayerGui
+            _ownershipHudGui  = hg
+
+            local bar = Instance.new('Frame')
+            bar.Name             = 'Bar'
+            bar.AnchorPoint      = Vector2.new(0.5, 0)
+            bar.Size             = UDim2.new(0, 340, 0, 42)
+            bar.Position         = UDim2.new(0.5, 0, 0, 6)
+            bar.BackgroundColor3 = Color3.fromRGB(16, 16, 16)
+            bar.BorderSizePixel  = 1
+            bar.BorderColor3     = Color3.fromRGB(255, 210, 0)
+            bar.ZIndex           = 20
+            bar.Parent           = hg
+
+            -- left accent bar
+            local accent = Instance.new('Frame')
+            accent.Size             = UDim2.new(0, 3, 1, 0)
+            accent.BackgroundColor3 = Color3.fromRGB(255, 210, 0)
+            accent.BorderSizePixel  = 0
+            accent.ZIndex           = 21
+            accent.Parent           = bar
+
+            -- top line
+            local topLine = Instance.new('Frame')
+            topLine.Size             = UDim2.new(1, 0, 0, 2)
+            topLine.BackgroundColor3 = Color3.fromRGB(255, 210, 0)
+            topLine.BorderSizePixel  = 0
+            topLine.ZIndex           = 21
+            topLine.Parent           = bar
+
+            local badge = Instance.new('TextLabel')
+            badge.Size                   = UDim2.new(0, 80, 1, 0)
+            badge.Position               = UDim2.new(0, 8, 0, 0)
+            badge.BackgroundTransparency = 1
+            badge.Text                   = 'LEADING'
+            badge.TextColor3             = Color3.fromRGB(255, 210, 0)
+            badge.Font                   = Enum.Font.GothamBold
+            badge.TextSize               = 11
+            badge.TextXAlignment         = Enum.TextXAlignment.Left
+            badge.ZIndex                 = 21
+            badge.Parent                 = bar
+
+            local riderLbl = Instance.new('TextLabel')
+            riderLbl.Name                   = 'RiderLabel'
+            riderLbl.Size                   = UDim2.new(1, -100, 1, 0)
+            riderLbl.Position               = UDim2.new(0, 90, 0, 0)
+            riderLbl.BackgroundTransparency = 1
+            riderLbl.Text                   = '0 riders nearby'
+            riderLbl.TextColor3             = Color3.fromRGB(240, 240, 240)
+            riderLbl.Font                   = Enum.Font.Gotham
+            riderLbl.TextSize               = 15
+            riderLbl.TextXAlignment         = Enum.TextXAlignment.Left
+            riderLbl.ZIndex                 = 21
+            riderLbl.Parent                 = bar
+        end
+        _ownershipHudGui.Enabled = true
+
+        -- re-adorn box if character respawns
+        local RS2 = game:GetService('RunService')
+        local _lastOwnChar = myChar
+        local _frameCount  = 0
+        _G.OwnershipConn = RS2.Heartbeat:Connect(function()
+            if not _ownershipActive then return end
+
+            -- re-adorn on respawn
+            local curChar = plr.Character
+            if curChar ~= _lastOwnChar then
+                _lastOwnChar = curChar
+                if curChar and _selfLeaderBox then
+                    _selfLeaderBox.Adornee = curChar
+                end
+            end
+
+            -- update rider count every 30 frames (~0.5s)
+            _frameCount += 1
+            if _frameCount < 30 then return end
+            _frameCount = 0
+
+            local myHRP = curChar and curChar:FindFirstChild('HumanoidRootPart')
+            local bar2  = _ownershipHudGui and _ownershipHudGui:FindFirstChild('Bar')
+            local lbl   = bar2 and bar2:FindFirstChild('RiderLabel')
+            if not lbl then return end
+
+            local count = 0
+            if myHRP then
+                local myPos = myHRP.Position
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p == plr then continue end
+                    local c = p.Character
+                    local h = c and c:FindFirstChild('HumanoidRootPart')
+                    if h and (h.Position - myPos).Magnitude <= 200 then
+                        count += 1
+                    end
+                end
+            end
+
+            local word = count == 1 and 'rider' or 'riders'
+            lbl.Text = count .. ' ' .. word .. ' within 200 studs'
+        end)
+
+        showToast('You are the leader')
+    end
+})
+
+RideoutLeft:AddDivider()
+
+-- Set Leader
+RideoutLeft:AddInput('RideoutLeaderName', {
+    Default  = '',
+    Numeric  = false,
+    Finished = false,
+    Text     = 'Leader username',
+})
+
+RideoutLeft:AddButton({
+    Text = 'Set Leader',
+    Func = function()
+        local raw = (Options.RideoutLeaderName and Options.RideoutLeaderName.Value or ''):lower():gsub('%s+', '')
+        if raw == '' then showToast('Enter a username'); return end
+        local found = nil
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= plr then
+                if p.Name:lower():find(raw, 1, true) or p.DisplayName:lower():find(raw, 1, true) then
+                    found = p; break
+                end
+            end
+        end
+        if not found then showToast('Player not found'); return end
+        _rideoutLeader = found
+        _applyLeaderESP(found)
+        showToast('Leader: ' .. found.Name)
+        -- re-apply trail if toggle is on
+        if Toggles.LeaderTrail and Toggles.LeaderTrail.Value then
+            _applyLeaderTrail(found)
+        end
+    end
+})
+
+RideoutLeft:AddDivider()
+
+-- Leader Trail toggle
+RideoutLeft:AddToggle('LeaderTrail', {
+    Text    = 'Leader Trail (permanent)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            if not _rideoutLeader then showToast('Set a leader first'); Toggles.LeaderTrail:SetValue(false); return end
+            _applyLeaderTrail(_rideoutLeader)
+            showToast('Leader trail ON')
+        else
+            _cleanLeaderTrail()
+            showToast('Leader trail OFF')
+        end
+    end
+})
+
+-- Teleport to Leader
+RideoutLeft:AddButton({
+    Text = 'Teleport to Leader',
+    Func = function()
+        if not _rideoutLeader then showToast('Set a leader first'); return end
+        local char = _rideoutLeader.Character
+        if not char then showToast('Leader has no character'); return end
+        local hrp = char:FindFirstChild('HumanoidRootPart')
+        if not hrp then showToast('Leader HRP not found'); return end
+        local myChar = plr.Character
+        local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
+        if not myHRP then showToast('Get in-game first'); return end
+        local offset = Vector3.new(3, 0, 3)
+        myHRP.CFrame = CFrame.new(hrp.Position + offset)
+        showToast('Teleported to ' .. _rideoutLeader.Name)
+    end
+})
+
+RideoutLeft:AddDivider()
+
+-- Leader HUD toggle (right side of screen overlay)
+RideoutLeft:AddToggle('RideoutHUD', {
+    Text    = 'Rideout HUD',
+    Default = false,
+    Callback = function(val)
+        if val then
+            if not _rideoutHudGui then
+                local hg = Instance.new('ScreenGui')
+                hg.Name           = 'RideoutHUDGui'
+                hg.ResetOnSpawn   = false
+                hg.DisplayOrder   = 210
+                hg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+                hg.Parent         = plr.PlayerGui
+                _rideoutHudGui = hg
+
+                local card = Instance.new('Frame')
+                card.Size             = UDim2.new(0, 220, 0, 72)
+                card.Position         = UDim2.new(1, -228, 0, 8)
+                card.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+                card.BorderSizePixel  = 1
+                card.BorderColor3     = Color3.fromRGB(50, 255, 80)
+                card.ZIndex           = 20
+                card.Parent           = hg
+
+                local accent = Instance.new('Frame')
+                accent.Size             = UDim2.new(0, 3, 1, 0)
+                accent.BackgroundColor3 = Color3.fromRGB(50, 255, 80)
+                accent.BorderSizePixel  = 0
+                accent.ZIndex           = 21
+                accent.Parent           = card
+
+                local titleL = Instance.new('TextLabel')
+                titleL.Size                   = UDim2.new(1, -10, 0, 20)
+                titleL.Position               = UDim2.new(0, 8, 0, 2)
+                titleL.BackgroundTransparency = 1
+                titleL.Text                   = 'RIDEOUT'
+                titleL.TextColor3             = Color3.fromRGB(50, 255, 80)
+                titleL.Font                   = Enum.Font.GothamBold
+                titleL.TextSize               = 12
+                titleL.TextXAlignment         = Enum.TextXAlignment.Left
+                titleL.ZIndex                 = 21
+                titleL.Parent                 = card
+
+                local infoL = Instance.new('TextLabel')
+                infoL.Name                   = 'InfoLabel'
+                infoL.Size                   = UDim2.new(1, -10, 0, 44)
+                infoL.Position               = UDim2.new(0, 8, 0, 24)
+                infoL.BackgroundTransparency = 1
+                infoL.Text                   = 'No leader set'
+                infoL.TextColor3             = Color3.fromRGB(200, 255, 200)
+                infoL.Font                   = Enum.Font.Gotham
+                infoL.TextSize               = 13
+                infoL.TextXAlignment         = Enum.TextXAlignment.Left
+                infoL.TextYAlignment         = Enum.TextYAlignment.Top
+                infoL.TextWrapped            = true
+                infoL.ZIndex                 = 21
+                infoL.Parent                 = card
+            end
+            _rideoutHudGui.Enabled = true
+            local infoLbl = _rideoutHudGui:FindFirstChild('Frame') and
+                            _rideoutHudGui.Frame:FindFirstChild('InfoLabel')
+            local RS2 = game:GetService('RunService')
+            _G.RideoutHUDConn = RS2.Heartbeat:Connect(function()
+                if not _rideoutHudGui or not _rideoutHudGui.Enabled then return end
+                local card2 = _rideoutHudGui:FindFirstChildWhichIsA('Frame')
+                if not card2 then return end
+                local lbl = card2:FindFirstChild('InfoLabel')
+                if not lbl then return end
+                if not _rideoutLeader then
+                    lbl.Text = 'No leader set'
+                    return
+                end
+                local lChar = _rideoutLeader.Character
+                local lHRP  = lChar and lChar:FindFirstChild('HumanoidRootPart')
+                local myChar2 = plr.Character
+                local myHRP2  = myChar2 and myChar2:FindFirstChild('HumanoidRootPart')
+                if not lHRP then lbl.Text = _rideoutLeader.Name .. '\nOffline'; return end
+                local spd  = math.floor((lHRP.AssemblyLinearVelocity.Magnitude * 0.625) + 0.5)
+                local dist = myHRP2 and math.floor((myHRP2.Position - lHRP.Position).Magnitude + 0.5) or 0
+                lbl.Text = _rideoutLeader.Name .. '\n' .. spd .. ' mph  |  ' .. dist .. ' studs away'
+            end)
+            showToast('Rideout HUD ON')
+        else
+            if _G.RideoutHUDConn then _G.RideoutHUDConn:Disconnect(); _G.RideoutHUDConn = nil end
+            if _rideoutHudGui then _rideoutHudGui.Enabled = false end
+            showToast('Rideout HUD OFF')
+        end
+    end
+})
+
+RideoutLeft:AddDivider()
+
+-- Follow Leader toggle (steers player's bike toward leader each Heartbeat)
+RideoutLeft:AddToggle('FollowLeader', {
+    Text    = 'Follow Leader (bike fly)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            if not _rideoutLeader then showToast('Set a leader first'); Toggles.FollowLeader:SetValue(false); return end
+            local RS2 = game:GetService('RunService')
+            _G.RideoutFollowConn = RS2.Heartbeat:Connect(function(dt)
+                if not _rideoutLeader then return end
+                local lChar = _rideoutLeader.Character
+                local lHRP  = lChar and lChar:FindFirstChild('HumanoidRootPart')
+                if not lHRP then return end
+                local _, bikeRoot = getBikeRoot()
+                if not bikeRoot then return end
+                local toLeader = lHRP.Position - bikeRoot.Position
+                local dist2 = toLeader.Magnitude
+                if dist2 < 6 then
+                    bikeRoot.AssemblyLinearVelocity = bikeRoot.AssemblyLinearVelocity * 0.85
+                    return
+                end
+                local dir = toLeader.Unit
+                local speed = math.min(dist2 * 0.5, 80)
+                bikeRoot.AssemblyLinearVelocity = Vector3.new(
+                    dir.X * speed,
+                    bikeRoot.AssemblyLinearVelocity.Y,
+                    dir.Z * speed
+                )
+            end)
+            showToast('Follow Leader ON')
+        else
+            if _G.RideoutFollowConn then _G.RideoutFollowConn:Disconnect(); _G.RideoutFollowConn = nil end
+            showToast('Follow Leader OFF')
+        end
+    end
+})
+
+RideoutLeft:AddDivider()
+
+-- ---- Rideout Waypoints -------------------------------------------------
+RideoutLeft:AddInput('RoWpName', {
+    Default  = 'Waypoint',
+    Numeric  = false,
+    Finished = false,
+    Text     = 'Waypoint name',
+})
+
+RideoutLeft:AddButton({
+    Text = 'Set Waypoint (at your position)',
+    Func = function()
+        local myChar = plr.Character
+        local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
+        if not myHRP then showToast('Get in-game first'); return end
+        local name = (Options.RoWpName and Options.RoWpName.Value or 'Waypoint')
+        if name:gsub('%s+', '') == '' then name = 'Waypoint' end
+        local pos = myHRP.Position
+        _makeRideoutWP(name, pos.X, pos.Y, pos.Z)
+    end
+})
+
+RideoutLeft:AddDivider()
+
+RideoutLeft:AddInput('RoImportCF', {
+    Default  = '',
+    Numeric  = false,
+    Finished = false,
+    Text     = 'Import: X, Y, Z  (or CFrame.new(...))',
+})
+
+RideoutLeft:AddButton({
+    Text = 'Import Waypoint',
+    Func = function()
+        local str = Options.RoImportCF and Options.RoImportCF.Value or ''
+        local x, y, z = _parseXYZ(str)
+        if not x then showToast('Invalid CFrame -- use X, Y, Z'); return end
+        local name = (Options.RoWpName and Options.RoWpName.Value or 'Waypoint')
+        if name:gsub('%s+', '') == '' then name = 'Imported WP' end
+        _makeRideoutWP(name, x, y, z)
+    end
+})
+
+RideoutLeft:AddButton({
+    Text = 'Copy Current CFrame',
+    Func = function()
+        local myChar = plr.Character
+        local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
+        if not myHRP then showToast('Get in-game first'); return end
+        local p = myHRP.Position
+        local cfStr = string.format('%.2f, %.2f, %.2f', p.X, p.Y, p.Z)
+        pcall(function() setclipboard(cfStr) end)
+        showToast('Pos: ' .. cfStr)
+    end
+})
+
+RideoutLeft:AddDivider()
+
+RideoutLeft:AddButton({
+    Text = 'Waypoint List',
+    Func = function()
+        if rideoutWpGui then rideoutWpGui.Enabled = not rideoutWpGui.Enabled end
+    end
+})
+
+RideoutLeft:AddButton({
+    Text = 'Clear All Waypoints',
+    Func = function()
+        _clearRideoutWPs()
+        showToast('All waypoints cleared')
+    end
+})
+
+-- Right groupbox: leader info + refresh
+RideoutRight:AddButton({
+    Text = 'Refresh Leader ESP',
+    Func = function()
+        if not _rideoutLeader then showToast('No leader set'); return end
+        _applyLeaderESP(_rideoutLeader)
+        if Toggles.LeaderTrail and Toggles.LeaderTrail.Value then
+            _applyLeaderTrail(_rideoutLeader)
+        end
+        showToast('Leader ESP refreshed')
+    end
+})
+
+RideoutRight:AddButton({
+    Text = 'Clear Leader',
+    Func = function()
+        _rideoutLeader = nil
+        _cleanLeaderESP()
+        _cleanLeaderTrail()
+        if Toggles.LeaderTrail then Toggles.LeaderTrail:SetValue(false) end
+        if Toggles.FollowLeader then Toggles.FollowLeader:SetValue(false) end
+        showToast('Leader cleared')
+    end
+})
+
+RideoutRight:AddDivider()
+
+-- auto-refresh leader ESP when leader respawns (character changed)
+do
+    local RS2 = game:GetService('RunService')
+    local _lastLeaderChar = nil
+    _G.RideoutLeaderConn = RS2.Heartbeat:Connect(function()
+        if not _rideoutLeader then _lastLeaderChar = nil; return end
+        local char = _rideoutLeader.Character
+        if char ~= _lastLeaderChar then
+            _lastLeaderChar = char
+            if char then
+                task.delay(0.2, function()
+                    _applyLeaderESP(_rideoutLeader)
+                    if Toggles.LeaderTrail and Toggles.LeaderTrail.Value then
+                        _applyLeaderTrail(_rideoutLeader)
+                    end
+                end)
+            end
+        end
+    end)
+end
+
+-- ============================================================
+-- RIDEOUT WAYPOINT LIST PANEL
+-- ============================================================
+do
+    local wpg = Instance.new('ScreenGui')
+    wpg.Name           = 'RideoutWPGui'
+    wpg.ResetOnSpawn   = false
+    wpg.DisplayOrder   = 996
+    wpg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    wpg.Enabled        = false
+    wpg.Parent         = plr.PlayerGui
+    rideoutWpGui       = wpg
+
+    local panel = Instance.new('Frame')
+    panel.Name             = 'Panel'
+    panel.Size             = UDim2.new(0, 440, 0, 420)
+    panel.Position         = UDim2.new(0.5, -220, 0.5, -210)
+    panel.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+    panel.BorderSizePixel  = 1
+    panel.BorderColor3     = Color3.fromRGB(50, 80, 50)
+    panel.Active           = true
+    panel.ZIndex           = 10
+    panel.Parent           = wpg
+
+    -- drag
+    do
+        local drag, dragStart, startPos = false, nil, nil
+        panel.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                drag = true; dragStart = inp.Position; startPos = panel.Position
+            end
+        end)
+        panel.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+        end)
+        game:GetService('UserInputService').InputChanged:Connect(function(inp)
+            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                local d = inp.Position - dragStart
+                panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                           startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+    end
+
+    -- title bar
+    local titleBar = Instance.new('Frame')
+    titleBar.Size             = UDim2.new(1, 0, 0, 30)
+    titleBar.BackgroundColor3 = Color3.fromRGB(25, 45, 25)
+    titleBar.BorderSizePixel  = 0
+    titleBar.ZIndex           = 11
+    titleBar.Parent           = panel
+
+    local accentLine = Instance.new('Frame')
+    accentLine.Size             = UDim2.new(1, 0, 0, 2)
+    accentLine.Position         = UDim2.new(0, 0, 1, -2)
+    accentLine.BackgroundColor3 = Color3.fromRGB(50, 255, 80)
+    accentLine.BorderSizePixel  = 0
+    accentLine.ZIndex           = 12
+    accentLine.Parent           = titleBar
+
+    local titleLblWp = Instance.new('TextLabel')
+    titleLblWp.Size                   = UDim2.new(1, -40, 1, 0)
+    titleLblWp.Position               = UDim2.new(0, 10, 0, 0)
+    titleLblWp.BackgroundTransparency = 1
+    titleLblWp.Text                   = 'Rideout Waypoints'
+    titleLblWp.TextColor3             = Color3.fromRGB(50, 255, 80)
+    titleLblWp.Font                   = Enum.Font.GothamBold
+    titleLblWp.TextSize               = 14
+    titleLblWp.TextXAlignment         = Enum.TextXAlignment.Left
+    titleLblWp.ZIndex                 = 12
+    titleLblWp.Parent                 = titleBar
+
+    local closeBtnWp = Instance.new('TextButton')
+    closeBtnWp.Size             = UDim2.new(0, 30, 1, 0)
+    closeBtnWp.Position         = UDim2.new(1, -30, 0, 0)
+    closeBtnWp.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+    closeBtnWp.BorderSizePixel  = 0
+    closeBtnWp.Text             = 'X'
+    closeBtnWp.TextColor3       = Color3.fromRGB(240, 240, 240)
+    closeBtnWp.Font             = Enum.Font.GothamBold
+    closeBtnWp.TextSize         = 13
+    closeBtnWp.ZIndex           = 12
+    closeBtnWp.Parent           = titleBar
+    closeBtnWp.MouseButton1Click:Connect(function() wpg.Enabled = false end)
+
+    -- column header
+    local hdr = Instance.new('Frame')
+    hdr.Size             = UDim2.new(1, 0, 0, 22)
+    hdr.Position         = UDim2.new(0, 0, 0, 30)
+    hdr.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+    hdr.BorderSizePixel  = 0
+    hdr.ZIndex           = 11
+    hdr.Parent           = panel
+
+    local function hdrLabel(txt, x, w)
+        local l = Instance.new('TextLabel')
+        l.Size                   = UDim2.new(0, w, 1, 0)
+        l.Position               = UDim2.new(0, x, 0, 0)
+        l.BackgroundTransparency = 1
+        l.Text                   = txt
+        l.TextColor3             = Color3.fromRGB(140, 140, 140)
+        l.Font                   = Enum.Font.GothamBold
+        l.TextSize               = 11
+        l.TextXAlignment         = Enum.TextXAlignment.Left
+        l.ZIndex                 = 12
+        l.Parent                 = hdr
+    end
+    hdrLabel('Name',     8,   240)
+    hdrLabel('',         248,  0)
+    hdrLabel('Position', 256, 120)
+
+    -- scrolling list
+    local scroll = Instance.new('ScrollingFrame')
+    scroll.Name                            = 'Scroll'
+    scroll.Size                            = UDim2.new(1, 0, 1, -106)
+    scroll.Position                        = UDim2.new(0, 0, 0, 52)
+    scroll.BackgroundColor3                = Color3.fromRGB(16, 16, 16)
+    scroll.BorderSizePixel                 = 0
+    scroll.ScrollBarThickness              = 6
+    scroll.ScrollBarImageColor3            = Color3.fromRGB(50, 200, 70)
+    scroll.CanvasSize                      = UDim2.new(0, 0, 0, 0)
+    scroll.AutomaticCanvasSize             = Enum.AutomaticSize.Y
+    scroll.ZIndex                          = 11
+    scroll.Parent                          = panel
+
+    local listLayout = Instance.new('UIListLayout')
+    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    listLayout.Padding   = UDim.new(0, 2)
+    listLayout.Parent    = scroll
+
+    local listPad = Instance.new('UIPadding')
+    listPad.PaddingTop  = UDim.new(0, 3)
+    listPad.PaddingLeft = UDim.new(0, 3)
+    listPad.Parent      = scroll
+
+    -- empty state label
+    local emptyLbl = Instance.new('TextLabel')
+    emptyLbl.Name                   = 'EmptyLabel'
+    emptyLbl.Size                   = UDim2.new(1, 0, 0, 36)
+    emptyLbl.BackgroundTransparency = 1
+    emptyLbl.Text                   = 'No waypoints placed yet.\nUse "Set Waypoint" in the Rideout tab.'
+    emptyLbl.TextColor3             = Color3.fromRGB(100, 100, 100)
+    emptyLbl.Font                   = Enum.Font.Gotham
+    emptyLbl.TextSize               = 12
+    emptyLbl.TextWrapped            = true
+    emptyLbl.ZIndex                 = 12
+    emptyLbl.Parent                 = scroll
+
+    local function updateEmptyLabel()
+        local count = 0
+        for _ in pairs(rideoutWPs) do count += 1 end
+        emptyLbl.Visible = (count == 0)
+    end
+
+    -- footer: total count label + clear-all button
+    local footer = Instance.new('Frame')
+    footer.Size             = UDim2.new(1, 0, 0, 54)
+    footer.Position         = UDim2.new(0, 0, 1, -54)
+    footer.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
+    footer.BorderSizePixel  = 0
+    footer.ZIndex           = 11
+    footer.Parent           = panel
+
+    local footerLine = Instance.new('Frame')
+    footerLine.Size             = UDim2.new(1, 0, 0, 1)
+    footerLine.BackgroundColor3 = Color3.fromRGB(50, 80, 50)
+    footerLine.BorderSizePixel  = 0
+    footerLine.ZIndex           = 12
+    footerLine.Parent           = footer
+
+    local countLbl = Instance.new('TextLabel')
+    countLbl.Name                   = 'CountLabel'
+    countLbl.Size                   = UDim2.new(0.5, 0, 0, 26)
+    countLbl.Position               = UDim2.new(0, 8, 0, 6)
+    countLbl.BackgroundTransparency = 1
+    countLbl.Text                   = '0 waypoints'
+    countLbl.TextColor3             = Color3.fromRGB(130, 130, 130)
+    countLbl.Font                   = Enum.Font.Gotham
+    countLbl.TextSize               = 12
+    countLbl.TextXAlignment         = Enum.TextXAlignment.Left
+    countLbl.ZIndex                 = 12
+    countLbl.Parent                 = footer
+
+    local clearAllBtn = Instance.new('TextButton')
+    clearAllBtn.Size             = UDim2.new(0, 130, 0, 26)
+    clearAllBtn.Position         = UDim2.new(1, -138, 0, 6)
+    clearAllBtn.BackgroundColor3 = Color3.fromRGB(130, 35, 35)
+    clearAllBtn.BorderSizePixel  = 0
+    clearAllBtn.Text             = 'Clear All'
+    clearAllBtn.TextColor3       = Color3.fromRGB(240, 240, 240)
+    clearAllBtn.Font             = Enum.Font.GothamBold
+    clearAllBtn.TextSize         = 12
+    clearAllBtn.ZIndex           = 12
+    clearAllBtn.Parent           = footer
+    clearAllBtn.MouseButton1Click:Connect(function()
+        _clearRideoutWPs()
+        updateEmptyLabel()
+        countLbl.Text = '0 waypoints'
+        showToast('All waypoints cleared')
+    end)
+
+    local function updateCountLabel()
+        local count = 0
+        for _ in pairs(rideoutWPs) do count += 1 end
+        countLbl.Text = count .. (count == 1 and ' waypoint' or ' waypoints')
+    end
+
+    -- assign the forward-declared helpers
+    _reflowRoWpRows = function()
+        -- UIListLayout handles positioning automatically; just update footer
+        updateCountLabel()
+        updateEmptyLabel()
+    end
+
+    _addRoWpRow = function(wp, sc)
+        local rowCount = 0
+        for _ in pairs(rideoutWPs) do rowCount += 1 end
+
+        local row = Instance.new('Frame')
+        row.Name             = 'WpRow_' .. wp.id
+        row.LayoutOrder      = wp.id
+        row.Size             = UDim2.new(1, -6, 0, 30)
+        row.BackgroundColor3 = Color3.fromRGB(26, 26, 26)
+        row.BorderColor3     = Color3.fromRGB(40, 60, 40)
+        row.BorderSizePixel  = 1
+        row.ZIndex           = 12
+        row.Parent           = sc
+        wp.row = row
+
+        -- editable name box
+        local nameBox = Instance.new('TextBox')
+        nameBox.Size             = UDim2.new(1, -204, 1, -6)
+        nameBox.Position         = UDim2.new(0, 4, 0, 3)
+        nameBox.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+        nameBox.BorderColor3     = Color3.fromRGB(45, 70, 45)
+        nameBox.BorderSizePixel  = 1
+        nameBox.Text             = wp.name
+        nameBox.TextColor3       = Color3.fromRGB(220, 220, 220)
+        nameBox.Font             = Enum.Font.Gotham
+        nameBox.TextSize         = 13
+        nameBox.PlaceholderText  = 'Waypoint name'
+        nameBox.ClearTextOnFocus = false
+        nameBox.TextXAlignment   = Enum.TextXAlignment.Left
+        nameBox.ZIndex           = 13
+        nameBox.Parent           = row
+        nameBox.FocusLost:Connect(function()
+            local newName = nameBox.Text:match('^%s*(.-)%s*$')
+            if not newName or newName == '' then
+                newName = 'WP ' .. wp.id
+                nameBox.Text = newName
+            end
+            wp.name = newName
+            if wp.bbName and wp.bbName.Parent then wp.bbName.Text = newName end
+        end)
+
+        -- position display label
+        local posLbl = Instance.new('TextLabel')
+        posLbl.Size                   = UDim2.new(0, 100, 1, -6)
+        posLbl.Position               = UDim2.new(1, -200, 0, 3)
+        posLbl.BackgroundTransparency = 1
+        posLbl.Text                   = string.format('%.0f, %.0f, %.0f', wp.x, wp.y, wp.z)
+        posLbl.TextColor3             = Color3.fromRGB(100, 160, 100)
+        posLbl.Font                   = Enum.Font.Gotham
+        posLbl.TextSize               = 10
+        posLbl.TextXAlignment         = Enum.TextXAlignment.Left
+        posLbl.ZIndex                 = 13
+        posLbl.Parent                 = row
+
+        -- Go (teleport) button
+        local goBtn = Instance.new('TextButton')
+        goBtn.Size             = UDim2.new(0, 44, 1, -6)
+        goBtn.Position         = UDim2.new(1, -96, 0, 3)
+        goBtn.BackgroundColor3 = Color3.fromRGB(0, 100, 180)
+        goBtn.BorderSizePixel  = 0
+        goBtn.Text             = 'Go'
+        goBtn.TextColor3       = Color3.fromRGB(240, 240, 240)
+        goBtn.Font             = Enum.Font.GothamBold
+        goBtn.TextSize         = 12
+        goBtn.ZIndex           = 13
+        goBtn.Parent           = row
+        goBtn.MouseButton1Click:Connect(function()
+            local myChar = plr.Character
+            local myHRP  = myChar and myChar:FindFirstChild('HumanoidRootPart')
+            if not myHRP then return end
+            myHRP.CFrame = CFrame.new(wp.x, wp.y + 3, wp.z)
+            showToast('Teleported to ' .. wp.name)
+        end)
+
+        -- Copy CFrame button
+        local cpBtn = Instance.new('TextButton')
+        cpBtn.Size             = UDim2.new(0, 44, 1, -6)
+        cpBtn.Position         = UDim2.new(1, -48, 0, 3)
+        cpBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+        cpBtn.BorderSizePixel  = 0
+        cpBtn.Text             = 'Copy'
+        cpBtn.TextColor3       = Color3.fromRGB(180, 255, 180)
+        cpBtn.Font             = Enum.Font.GothamBold
+        cpBtn.TextSize         = 11
+        cpBtn.ZIndex           = 13
+        cpBtn.Parent           = row
+        cpBtn.MouseButton1Click:Connect(function()
+            local cfStr = string.format('%.2f, %.2f, %.2f', wp.x, wp.y, wp.z)
+            pcall(function() setclipboard(cfStr) end)
+            showToast('Copied: ' .. cfStr)
+        end)
+
+        -- small red X delete button at far right of row
+        local xBtn = Instance.new('TextButton')
+        xBtn.Size             = UDim2.new(0, 18, 1, -6)
+        xBtn.Position         = UDim2.new(1, -2, 0, 3)
+        xBtn.AnchorPoint      = Vector2.new(1, 0)
+        xBtn.BackgroundColor3 = Color3.fromRGB(160, 35, 35)
+        xBtn.BorderSizePixel  = 0
+        xBtn.Text             = 'X'
+        xBtn.TextColor3       = Color3.fromRGB(240, 240, 240)
+        xBtn.Font             = Enum.Font.GothamBold
+        xBtn.TextSize         = 10
+        xBtn.ZIndex           = 13
+        xBtn.Parent           = row
+        xBtn.MouseButton1Click:Connect(function()
+            pcall(function() if wp.beamPart and wp.beamPart.Parent then wp.beamPart:Destroy() end end)
+            pcall(function() if wp.topPart  and wp.topPart.Parent  then wp.topPart:Destroy()  end end)
+            row:Destroy()
+            rideoutWPs[wp.id] = nil
+            _reflowRoWpRows()
+        end)
+
+        _reflowRoWpRows()
+    end
+
+    -- populate rows for any waypoints already placed before panel was built
+    for _, wp in pairs(rideoutWPs) do
+        _addRoWpRow(wp, scroll)
+    end
+    updateEmptyLabel()
+    updateCountLabel()
+end
+
+-- ============================================================
 -- custom spawner panel (linoria-matched, no rounding)
 -- ============================================================
 
@@ -2057,6 +3659,598 @@ UIS.InputBegan:Connect(function(inp, gp)
         Toggles.SpawnerToggle:SetValue(false)
     end
 end)
+
+-- ============================================================
+-- TRAIL SETTINGS PANEL
+-- ============================================================
+
+do
+    local TRAIL_PRESETS = {
+        { name = 'Solid',   textureId = '',                        lightEmission = 0.5  },
+        { name = 'Neon',    textureId = '',                        lightEmission = 1.0  },
+        { name = 'Sparkle', textureId = 'rbxassetid://1308397735', lightEmission = 0.8  },
+        { name = 'Ribbon',  textureId = 'rbxassetid://16254848910', lightEmission = 0.4 },
+    }
+
+    local tg = Instance.new('ScreenGui')
+    tg.Name          = 'TrailSettingsGui'
+    tg.ResetOnSpawn  = false
+    tg.DisplayOrder  = 998
+    tg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    tg.Enabled       = false
+    tg.Parent        = plr.PlayerGui
+    trailGui         = tg
+
+    local panel = Instance.new('Frame')
+    panel.Size             = UDim2.new(0, 360, 0, 430)
+    panel.Position         = UDim2.new(0.5, -460, 0.5, -215)
+    panel.BackgroundColor3 = BG2
+    panel.BorderSizePixel  = 1
+    panel.BorderColor3     = BORDER
+    panel.Active           = true
+    panel.ZIndex           = 10
+    panel.Parent           = tg
+
+    -- drag
+    do
+        local drag, dragStart, startPos = false, nil, nil
+        panel.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                drag = true; dragStart = inp.Position; startPos = panel.Position
+            end
+        end)
+        panel.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+        end)
+        game:GetService('UserInputService').InputChanged:Connect(function(inp)
+            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                local d = inp.Position - dragStart
+                panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                           startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+    end
+
+    -- title bar
+    local title = Instance.new('Frame')
+    title.Size            = UDim2.new(1, 0, 0, 28)
+    title.BackgroundColor3 = BGSUB
+    title.BorderSizePixel = 0
+    title.ZIndex          = 11
+    title.Parent          = panel
+    local titleLbl = Instance.new('TextLabel')
+    titleLbl.Size  = UDim2.new(1, -36, 1, 0)
+    titleLbl.Position = UDim2.new(0, 8, 0, 0)
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Text  = 'Trail Settings'
+    titleLbl.TextColor3 = TEXT
+    titleLbl.Font  = Enum.Font.GothamBold
+    titleLbl.TextSize = 14
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+    titleLbl.ZIndex = 12
+    titleLbl.Parent = title
+    local closeBtn = Instance.new('TextButton')
+    closeBtn.Size  = UDim2.new(0, 28, 0, 28)
+    closeBtn.Position = UDim2.new(1, -28, 0, 0)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Text  = 'X'
+    closeBtn.TextColor3 = TEXT
+    closeBtn.Font  = Enum.Font.GothamBold
+    closeBtn.TextSize = 13
+    closeBtn.ZIndex = 12
+    closeBtn.Parent = title
+    closeBtn.MouseButton1Click:Connect(function() tg.Enabled = false end)
+
+    -- helper: row label + value box
+    local rowY = 36
+    local function makeRow(labelText, default, onChanged)
+        local lbl = Instance.new('TextLabel')
+        lbl.Size  = UDim2.new(0, 130, 0, 22)
+        lbl.Position = UDim2.new(0, 10, 0, rowY)
+        lbl.BackgroundTransparency = 1
+        lbl.Text  = labelText
+        lbl.TextColor3 = TEXT
+        lbl.Font  = Enum.Font.Gotham
+        lbl.TextSize = 13
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.ZIndex = 11
+        lbl.Parent = panel
+
+        local box = Instance.new('TextBox')
+        box.Size  = UDim2.new(0, 160, 0, 22)
+        box.Position = UDim2.new(0, 145, 0, rowY)
+        box.BackgroundColor3 = BGSUB
+        box.BorderColor3     = BORDER
+        box.BorderSizePixel  = 1
+        box.Text  = tostring(default)
+        box.TextColor3 = TEXT
+        box.Font  = Enum.Font.Gotham
+        box.TextSize = 13
+        box.ZIndex = 11
+        box.Parent = panel
+        box.FocusLost:Connect(function() onChanged(box.Text) end)
+        rowY += 28
+        return box
+    end
+
+    local function makeDivLine()
+        local line = Instance.new('Frame')
+        line.Size = UDim2.new(1, -20, 0, 1)
+        line.Position = UDim2.new(0, 10, 0, rowY + 4)
+        line.BackgroundColor3 = BORDER
+        line.BorderSizePixel = 0
+        line.ZIndex = 11
+        line.Parent = panel
+        rowY += 14
+    end
+
+    -- Type preset buttons
+    local typeLbl = Instance.new('TextLabel')
+    typeLbl.Size  = UDim2.new(0, 80, 0, 22)
+    typeLbl.Position = UDim2.new(0, 10, 0, rowY)
+    typeLbl.BackgroundTransparency = 1
+    typeLbl.Text  = 'Type:'
+    typeLbl.TextColor3 = TEXT
+    typeLbl.Font  = Enum.Font.GothamBold
+    typeLbl.TextSize = 13
+    typeLbl.TextXAlignment = Enum.TextXAlignment.Left
+    typeLbl.ZIndex = 11
+    typeLbl.Parent = panel
+    local presetBtns = {}
+    for i, preset in ipairs(TRAIL_PRESETS) do
+        local btn = Instance.new('TextButton')
+        btn.Size  = UDim2.new(0, 74, 0, 22)
+        btn.Position = UDim2.new(0, 70 + (i-1)*80, 0, rowY)
+        btn.BackgroundColor3 = BGSUB
+        btn.BorderColor3     = BORDER
+        btn.BorderSizePixel  = 1
+        btn.Text  = preset.name
+        btn.TextColor3 = TEXT
+        btn.Font  = Enum.Font.Gotham
+        btn.TextSize = 12
+        btn.ZIndex = 11
+        btn.Parent = panel
+        presetBtns[i] = btn
+        btn.MouseButton1Click:Connect(function()
+            trailSettings.textureId     = preset.textureId
+            trailSettings.lightEmission = preset.lightEmission
+            for _, b in ipairs(presetBtns) do b.BackgroundColor3 = BGSUB end
+            btn.BackgroundColor3 = ACCENT
+            -- live-apply if trail active
+            if _G.ActiveTrail and _G.ActiveTrail.Parent then
+                _G.ActiveTrail.Texture       = preset.textureId
+                _G.ActiveTrail.LightEmission = preset.lightEmission
+            end
+        end)
+    end
+    rowY += 32
+
+    -- Custom Texture ID
+    local texBox = makeRow('Texture ID', '', function(v)
+        trailSettings.textureId = v
+        if _G.ActiveTrail and _G.ActiveTrail.Parent then
+            _G.ActiveTrail.Texture = v
+        end
+    end)
+
+    makeDivLine()
+
+    -- Start Color
+    makeRow('Start R', trailSettings.startR, function(v)
+        trailSettings.startR = math.clamp(tonumber(v) or 255, 0, 255)
+    end)
+    makeRow('Start G', trailSettings.startG, function(v)
+        trailSettings.startG = math.clamp(tonumber(v) or 215, 0, 255)
+    end)
+    makeRow('Start B', trailSettings.startB, function(v)
+        trailSettings.startB = math.clamp(tonumber(v) or 0, 0, 255)
+    end)
+
+    makeDivLine()
+
+    -- End Color
+    makeRow('End R', trailSettings.endR, function(v)
+        trailSettings.endR = math.clamp(tonumber(v) or 200, 0, 255)
+    end)
+    makeRow('End G', trailSettings.endG, function(v)
+        trailSettings.endG = math.clamp(tonumber(v) or 100, 0, 255)
+    end)
+    makeRow('End B', trailSettings.endB, function(v)
+        trailSettings.endB = math.clamp(tonumber(v) or 0, 0, 255)
+    end)
+
+    makeDivLine()
+
+    -- Lifetime & Width
+    makeRow('Lifetime (s)', trailSettings.lifetime, function(v)
+        local n = math.clamp(tonumber(v) or 0.6, 0.05, 10)
+        trailSettings.lifetime = n
+        if _G.ActiveTrail and _G.ActiveTrail.Parent then _G.ActiveTrail.Lifetime = n end
+    end)
+    makeRow('Width (studs)', trailSettings.halfWidth * 2, function(v)
+        local n = math.clamp(tonumber(v) or 1, 0.1, 8)
+        trailSettings.halfWidth = n / 2
+        if _G.TrailAttach0 and _G.TrailAttach0.Parent then
+            _G.TrailAttach0.Position = Vector3.new(0,  trailSettings.halfWidth, 0)
+            _G.TrailAttach1.Position = Vector3.new(0, -trailSettings.halfWidth, 0)
+        end
+    end)
+    makeRow('Light Emission', trailSettings.lightEmission, function(v)
+        local n = math.clamp(tonumber(v) or 0.5, 0, 1)
+        trailSettings.lightEmission = n
+        if _G.ActiveTrail and _G.ActiveTrail.Parent then _G.ActiveTrail.LightEmission = n end
+    end)
+
+    makeDivLine()
+
+    -- Rainbow toggle
+    local rbLabel = Instance.new('TextLabel')
+    rbLabel.Size  = UDim2.new(0, 130, 0, 22)
+    rbLabel.Position = UDim2.new(0, 10, 0, rowY)
+    rbLabel.BackgroundTransparency = 1
+    rbLabel.Text  = 'Rainbow Trail'
+    rbLabel.TextColor3 = TEXT
+    rbLabel.Font  = Enum.Font.Gotham
+    rbLabel.TextSize = 13
+    rbLabel.TextXAlignment = Enum.TextXAlignment.Left
+    rbLabel.ZIndex = 11
+    rbLabel.Parent = panel
+    local rbBtn = Instance.new('TextButton')
+    rbBtn.Size  = UDim2.new(0, 80, 0, 22)
+    rbBtn.Position = UDim2.new(0, 145, 0, rowY)
+    rbBtn.BackgroundColor3 = BGSUB
+    rbBtn.BorderColor3     = BORDER
+    rbBtn.BorderSizePixel  = 1
+    rbBtn.Text  = 'OFF'
+    rbBtn.TextColor3 = TEXT
+    rbBtn.Font  = Enum.Font.Gotham
+    rbBtn.TextSize = 13
+    rbBtn.ZIndex = 11
+    rbBtn.Parent = panel
+    rbBtn.MouseButton1Click:Connect(function()
+        trailSettings.rainbow = not trailSettings.rainbow
+        if trailSettings.rainbow then
+            rbBtn.BackgroundColor3 = ACCENT
+            rbBtn.Text = 'ON'
+        else
+            rbBtn.BackgroundColor3 = BGSUB
+            rbBtn.Text = 'OFF'
+        end
+    end)
+end
+
+-- ============================================================
+-- BIKE CUSTOMIZATION PANEL
+-- ============================================================
+do
+    local BIKE_MATERIALS = {
+        { name = 'Plastic',      mat = Enum.Material.SmoothPlastic },
+        { name = 'Metal',        mat = Enum.Material.Metal         },
+        { name = 'Neon',         mat = Enum.Material.Neon          },
+        { name = 'ForceField',   mat = Enum.Material.ForceField    },
+        { name = 'Glass',        mat = Enum.Material.Glass         },
+        { name = 'DiamondPlate', mat = Enum.Material.DiamondPlate  },
+    }
+
+    local bc = Instance.new('ScreenGui')
+    bc.Name           = 'BikeCustGui'
+    bc.ResetOnSpawn   = false
+    bc.DisplayOrder   = 997
+    bc.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    bc.Enabled        = false
+    bc.Parent         = plr.PlayerGui
+    bikeCustGui       = bc
+
+    local panel = Instance.new('Frame')
+    panel.Size             = UDim2.new(0, 380, 0, 520)
+    panel.Position         = UDim2.new(0.5, 80, 0.5, -260)
+    panel.BackgroundColor3 = BG2
+    panel.BorderSizePixel  = 1
+    panel.BorderColor3     = BORDER
+    panel.Active           = true
+    panel.ZIndex           = 10
+    panel.Parent           = bc
+
+    -- drag
+    do
+        local drag, dragStart, startPos = false, nil, nil
+        panel.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                drag = true; dragStart = inp.Position; startPos = panel.Position
+            end
+        end)
+        panel.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+        end)
+        game:GetService('UserInputService').InputChanged:Connect(function(inp)
+            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                local d = inp.Position - dragStart
+                panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                           startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+    end
+
+    -- title bar
+    local titleBar = Instance.new('Frame')
+    titleBar.Size             = UDim2.new(1, 0, 0, 28)
+    titleBar.BackgroundColor3 = BGSUB
+    titleBar.BorderSizePixel  = 0
+    titleBar.ZIndex           = 11
+    titleBar.Parent           = panel
+    local titleLbl2 = Instance.new('TextLabel')
+    titleLbl2.Size                   = UDim2.new(1, -36, 1, 0)
+    titleLbl2.Position               = UDim2.new(0, 8, 0, 0)
+    titleLbl2.BackgroundTransparency = 1
+    titleLbl2.Text                   = 'Bike Customization'
+    titleLbl2.TextColor3             = TEXT
+    titleLbl2.Font                   = Enum.Font.GothamBold
+    titleLbl2.TextSize               = 14
+    titleLbl2.TextXAlignment         = Enum.TextXAlignment.Left
+    titleLbl2.ZIndex                 = 12
+    titleLbl2.Parent                 = titleBar
+    local closeBtn2 = Instance.new('TextButton')
+    closeBtn2.Size             = UDim2.new(0, 28, 0, 28)
+    closeBtn2.Position         = UDim2.new(1, -28, 0, 0)
+    closeBtn2.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    closeBtn2.BorderSizePixel  = 0
+    closeBtn2.Text             = 'X'
+    closeBtn2.TextColor3       = TEXT
+    closeBtn2.Font             = Enum.Font.GothamBold
+    closeBtn2.TextSize         = 13
+    closeBtn2.ZIndex           = 12
+    closeBtn2.Parent           = titleBar
+    closeBtn2.MouseButton1Click:Connect(function() bc.Enabled = false end)
+
+    local rowY2 = 36
+    local function makeRow2(labelText, default, onChanged)
+        local lbl = Instance.new('TextLabel')
+        lbl.Size  = UDim2.new(0, 140, 0, 22)
+        lbl.Position = UDim2.new(0, 10, 0, rowY2)
+        lbl.BackgroundTransparency = 1
+        lbl.Text  = labelText
+        lbl.TextColor3 = TEXT
+        lbl.Font  = Enum.Font.Gotham
+        lbl.TextSize = 13
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.ZIndex = 11
+        lbl.Parent = panel
+        local box = Instance.new('TextBox')
+        box.Size  = UDim2.new(0, 180, 0, 22)
+        box.Position = UDim2.new(0, 155, 0, rowY2)
+        box.BackgroundColor3 = BGSUB
+        box.BorderColor3     = BORDER
+        box.BorderSizePixel  = 1
+        box.Text  = tostring(default)
+        box.TextColor3 = TEXT
+        box.Font  = Enum.Font.Gotham
+        box.TextSize = 13
+        box.ZIndex = 11
+        box.Parent = panel
+        box.FocusLost:Connect(function() onChanged(box.Text) end)
+        rowY2 += 28
+        return box
+    end
+
+    local function makeDivLine2()
+        local line = Instance.new('Frame')
+        line.Size             = UDim2.new(1, -20, 0, 1)
+        line.Position         = UDim2.new(0, 10, 0, rowY2 + 4)
+        line.BackgroundColor3 = BORDER
+        line.BorderSizePixel  = 0
+        line.ZIndex           = 11
+        line.Parent           = panel
+        rowY2 += 14
+    end
+
+    local function makeSectionLbl(text)
+        local lbl = Instance.new('TextLabel')
+        lbl.Size                   = UDim2.new(1, -20, 0, 20)
+        lbl.Position               = UDim2.new(0, 10, 0, rowY2)
+        lbl.BackgroundTransparency = 1
+        lbl.Text                   = text
+        lbl.TextColor3             = ACCENT
+        lbl.Font                   = Enum.Font.GothamBold
+        lbl.TextSize               = 12
+        lbl.TextXAlignment         = Enum.TextXAlignment.Left
+        lbl.ZIndex                 = 11
+        lbl.Parent                 = panel
+        rowY2 += 24
+    end
+
+    -- helper: apply to all bike parts
+    local function applyToBike(fn)
+        local bikeModel = getBikeRoot()
+        if not bikeModel then showToast('Get on a bike first'); return end
+        for _, p in ipairs(bikeModel:GetDescendants()) do
+            if p:IsA('BasePart') then pcall(fn, p) end
+        end
+    end
+
+    -- --- Material presets ---
+    makeSectionLbl('Material')
+    local matBtns = {}
+    local matPerRow = 3
+    for i, entry in ipairs(BIKE_MATERIALS) do
+        local col = (i - 1) % matPerRow
+        local row = math.floor((i - 1) / matPerRow)
+        local btn = Instance.new('TextButton')
+        btn.Size             = UDim2.new(0, 110, 0, 22)
+        btn.Position         = UDim2.new(0, 10 + col * 118, 0, rowY2 + row * 26)
+        btn.BackgroundColor3 = BGSUB
+        btn.BorderColor3     = BORDER
+        btn.BorderSizePixel  = 1
+        btn.Text             = entry.name
+        btn.TextColor3       = TEXT
+        btn.Font             = Enum.Font.Gotham
+        btn.TextSize         = 12
+        btn.ZIndex           = 11
+        btn.Parent           = panel
+        matBtns[i]           = btn
+        btn.MouseButton1Click:Connect(function()
+            for _, b in ipairs(matBtns) do b.BackgroundColor3 = BGSUB end
+            btn.BackgroundColor3 = ACCENT
+            applyToBike(function(p) p.Material = entry.mat end)
+            showToast('Material: ' .. entry.name)
+        end)
+    end
+    rowY2 += math.ceil(#BIKE_MATERIALS / matPerRow) * 26 + 4
+
+    makeDivLine2()
+
+    -- --- Color ---
+    makeSectionLbl('Color')
+    local colorBoxes = {}
+    colorBoxes.r = makeRow2('Red (0-255)', 255, function() end)
+    colorBoxes.g = makeRow2('Green (0-255)', 0,   function() end)
+    colorBoxes.b = makeRow2('Blue (0-255)', 200,  function() end)
+
+    local applyColorBtn = Instance.new('TextButton')
+    applyColorBtn.Size             = UDim2.new(0, 160, 0, 24)
+    applyColorBtn.Position         = UDim2.new(0, 10, 0, rowY2)
+    applyColorBtn.BackgroundColor3 = BGSUB
+    applyColorBtn.BorderColor3     = BORDER
+    applyColorBtn.BorderSizePixel  = 1
+    applyColorBtn.Text             = 'Apply Color'
+    applyColorBtn.TextColor3       = TEXT
+    applyColorBtn.Font             = Enum.Font.GothamBold
+    applyColorBtn.TextSize         = 13
+    applyColorBtn.ZIndex           = 11
+    applyColorBtn.Parent           = panel
+    applyColorBtn.MouseButton1Click:Connect(function()
+        local r = math.clamp(tonumber(colorBoxes.r.Text) or 255, 0, 255)
+        local g = math.clamp(tonumber(colorBoxes.g.Text) or 0,   0, 255)
+        local b = math.clamp(tonumber(colorBoxes.b.Text) or 200, 0, 255)
+        local col = Color3.fromRGB(r, g, b)
+        applyToBike(function(p) p.Color = col end)
+        showToast(string.format('Color: %d %d %d', r, g, b))
+    end)
+    rowY2 += 32
+
+    makeDivLine2()
+
+    -- --- Transparency & Reflectance ---
+    makeSectionLbl('Surface')
+    makeRow2('Transparency (0-1)', 0, function(v)
+        local n = math.clamp(tonumber(v) or 0, 0, 0.99)
+        applyToBike(function(p) p.Transparency = n end)
+    end)
+    makeRow2('Reflectance (0-1)', 0, function(v)
+        local n = math.clamp(tonumber(v) or 0, 0, 1)
+        applyToBike(function(p) p.Reflectance = n end)
+    end)
+
+    makeDivLine2()
+
+    -- --- Headlight ---
+    makeSectionLbl('Headlight')
+    local _bikeLight = nil
+    local hlBrightnessBox = makeRow2('Brightness', 5, function() end)
+    local hlRangeBox      = makeRow2('Range (studs)', 40, function() end)
+
+    local hlToggleBtn = Instance.new('TextButton')
+    hlToggleBtn.Size             = UDim2.new(0, 160, 0, 24)
+    hlToggleBtn.Position         = UDim2.new(0, 10, 0, rowY2)
+    hlToggleBtn.BackgroundColor3 = BGSUB
+    hlToggleBtn.BorderColor3     = BORDER
+    hlToggleBtn.BorderSizePixel  = 1
+    hlToggleBtn.Text             = 'Headlight: OFF'
+    hlToggleBtn.TextColor3       = TEXT
+    hlToggleBtn.Font             = Enum.Font.GothamBold
+    hlToggleBtn.TextSize         = 13
+    hlToggleBtn.ZIndex           = 11
+    hlToggleBtn.Parent           = panel
+    hlToggleBtn.MouseButton1Click:Connect(function()
+        if _bikeLight and _bikeLight.Parent then
+            _bikeLight:Destroy(); _bikeLight = nil
+            hlToggleBtn.BackgroundColor3 = BGSUB
+            hlToggleBtn.Text = 'Headlight: OFF'
+            showToast('Headlight OFF')
+        else
+            local _, bikeRoot = getBikeRoot()
+            if not bikeRoot then showToast('Get on a bike first'); return end
+            local pl = Instance.new('PointLight')
+            pl.Brightness = math.max(0.1, tonumber(hlBrightnessBox.Text) or 5)
+            pl.Range      = math.max(1,   tonumber(hlRangeBox.Text)      or 40)
+            pl.Color      = Color3.fromRGB(255, 240, 200)
+            pl.Parent     = bikeRoot
+            _bikeLight    = pl
+            hlToggleBtn.BackgroundColor3 = ACCENT
+            hlToggleBtn.Text = 'Headlight: ON'
+            showToast('Headlight ON')
+        end
+    end)
+    rowY2 += 32
+
+    makeDivLine2()
+
+    -- --- Exhaust Smoke ---
+    makeSectionLbl('Exhaust Smoke')
+    local _bikeSmoke = nil
+
+    local smokeToggleBtn = Instance.new('TextButton')
+    smokeToggleBtn.Size             = UDim2.new(0, 160, 0, 24)
+    smokeToggleBtn.Position         = UDim2.new(0, 10, 0, rowY2)
+    smokeToggleBtn.BackgroundColor3 = BGSUB
+    smokeToggleBtn.BorderColor3     = BORDER
+    smokeToggleBtn.BorderSizePixel  = 1
+    smokeToggleBtn.Text             = 'Smoke: OFF'
+    smokeToggleBtn.TextColor3       = TEXT
+    smokeToggleBtn.Font             = Enum.Font.GothamBold
+    smokeToggleBtn.TextSize         = 13
+    smokeToggleBtn.ZIndex           = 11
+    smokeToggleBtn.Parent           = panel
+    smokeToggleBtn.MouseButton1Click:Connect(function()
+        if _bikeSmoke and _bikeSmoke.Parent then
+            _bikeSmoke:Destroy(); _bikeSmoke = nil
+            smokeToggleBtn.BackgroundColor3 = BGSUB
+            smokeToggleBtn.Text = 'Smoke: OFF'
+            showToast('Smoke OFF')
+        else
+            local _, bikeRoot = getBikeRoot()
+            if not bikeRoot then showToast('Get on a bike first'); return end
+            local sm = Instance.new('Smoke')
+            sm.Color      = Color3.fromRGB(180, 180, 180)
+            sm.Opacity    = 0.3
+            sm.RiseVelocity = 4
+            sm.Size       = 2
+            sm.Parent     = bikeRoot
+            _bikeSmoke    = sm
+            smokeToggleBtn.BackgroundColor3 = ACCENT
+            smokeToggleBtn.Text = 'Smoke: ON'
+            showToast('Smoke ON')
+        end
+    end)
+    rowY2 += 32
+
+    -- Reset button
+    makeDivLine2()
+    local resetBtn = Instance.new('TextButton')
+    resetBtn.Size             = UDim2.new(1, -20, 0, 24)
+    resetBtn.Position         = UDim2.new(0, 10, 0, rowY2)
+    resetBtn.BackgroundColor3 = Color3.fromRGB(120, 40, 40)
+    resetBtn.BorderColor3     = BORDER
+    resetBtn.BorderSizePixel  = 1
+    resetBtn.Text             = 'Reset Appearance'
+    resetBtn.TextColor3       = TEXT
+    resetBtn.Font             = Enum.Font.GothamBold
+    resetBtn.TextSize         = 13
+    resetBtn.ZIndex           = 11
+    resetBtn.Parent           = panel
+    resetBtn.MouseButton1Click:Connect(function()
+        applyToBike(function(p)
+            p.Material     = Enum.Material.SmoothPlastic
+            p.Transparency = 0
+            p.Reflectance  = 0
+        end)
+        for _, b in ipairs(matBtns) do b.BackgroundColor3 = BGSUB end
+        showToast('Appearance reset')
+    end)
+
+    -- resize panel to fit content
+    panel.Size = UDim2.new(0, 380, 0, rowY2 + 40)
+end
 
 -- ============================================================
 -- MINIMAP
@@ -2589,7 +4783,13 @@ _G.SMCleanup = function()
 
     -- disconnect all RunService connections
     for _, key in ipairs({'SpeedConn', 'BrakeConn', 'TurnConn', 'AnimConn', 'HitboxConn',
-                          'AntiAdminConn', 'OptimizerConn'}) do
+                          'AntiAdminConn', 'OptimizerConn',
+                          'FlyConn', 'AntiFallConn', 'AirConn',
+                          'RainbowConn', 'TrailColorConn',
+                          'AdminESPConn', 'BikeESPConn', 'SpeedTagConn', 'SpeedTagLeaveConn',
+                          'JumpKeyConn',
+                          'RideoutLeaderConn', 'RideoutFollowConn', 'RideoutHUDConn',
+                          'RideoutWPUpdateConn', 'OwnershipConn'}) do
         if _G[key] then
             pcall(function() _G[key]:Disconnect() end)
             _G[key] = nil
@@ -2612,6 +4812,36 @@ _G.SMCleanup = function()
 
     -- clear hitbox selection boxes
     pcall(clearHitboxes)
+
+    -- cleanup bike trail
+    pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy() end end)
+    pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy() end end)
+    pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy()  end end)
+
+    -- cleanup ESP overlays
+    pcall(clearAdminESP)
+    pcall(clearBikeESP)
+    pcall(clearSpeedTags)
+
+    -- cleanup rideout
+    pcall(_cleanLeaderESP)
+    pcall(_cleanLeaderTrail)
+    pcall(_cleanOwnership)
+    pcall(_clearRideoutWPs)
+    pcall(function() if _rideoutHudGui    then _rideoutHudGui:Destroy()    end end)
+    pcall(function() if _ownershipHudGui  then _ownershipHudGui:Destroy()  end end)
+    pcall(function() if rideoutWpGui      then rideoutWpGui:Destroy()      end end)
+    pcall(function() if _G.RideoutTrailA0 then _G.RideoutTrailA0:Destroy() end end)
+    pcall(function() if _G.RideoutTrailA1 then _G.RideoutTrailA1:Destroy() end end)
+    pcall(function() if _G.RideoutTrail   then _G.RideoutTrail:Destroy()   end end)
+
+    -- unfreeze bike if still frozen
+    if _G.FrozenBikeParts then
+        for p in pairs(_G.FrozenBikeParts) do
+            pcall(function() p.Anchored = false end)
+        end
+        _G.FrozenBikeParts = nil
+    end
 
     -- destroy ScreenGuis this script owns
     pcall(function() gui:Destroy() end)
