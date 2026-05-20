@@ -1,3 +1,95 @@
+-- ============================================================
+-- LANGUAGE SELECTOR  (runs before anything else)
+-- ============================================================
+do
+    local _plr = game:GetService('Players').LocalPlayer
+    local _sel  = Instance.new('BindableEvent')
+    local _lang = 'en'
+
+    local _pg = Instance.new('ScreenGui')
+    _pg.Name           = 'LangSelectGui'
+    _pg.ResetOnSpawn   = false
+    _pg.DisplayOrder   = 9999
+    _pg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    _pg.Parent         = _plr:WaitForChild('PlayerGui')
+
+    -- dim overlay
+    local _ov = Instance.new('Frame')
+    _ov.Size                 = UDim2.new(1, 0, 1, 0)
+    _ov.BackgroundColor3     = Color3.fromRGB(0, 0, 0)
+    _ov.BackgroundTransparency = 0.55
+    _ov.BorderSizePixel      = 0
+    _ov.ZIndex               = 1
+    _ov.Parent               = _pg
+
+    -- card
+    local _card = Instance.new('Frame')
+    _card.Size             = UDim2.new(0, 270, 0, 96)
+    _card.Position         = UDim2.new(0.5, -135, 0.5, -48)
+    _card.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
+    _card.BorderSizePixel  = 1
+    _card.BorderColor3     = Color3.fromRGB(55, 55, 55)
+    _card.ZIndex           = 2
+    _card.Parent           = _pg
+
+    -- title bar
+    local _bar = Instance.new('Frame')
+    _bar.Size             = UDim2.new(1, 0, 0, 28)
+    _bar.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
+    _bar.BorderSizePixel  = 0
+    _bar.ZIndex           = 3
+    _bar.Parent           = _card
+
+    local _tlbl = Instance.new('TextLabel')
+    _tlbl.Size               = UDim2.new(1, -8, 1, 0)
+    _tlbl.Position           = UDim2.new(0, 8, 0, 0)
+    _tlbl.BackgroundTransparency = 1
+    _tlbl.Text               = 'Select Language / Seleccionar idioma'
+    _tlbl.TextColor3         = Color3.fromRGB(200, 200, 200)
+    _tlbl.Font               = Enum.Font.SourceSans
+    _tlbl.TextSize           = 13
+    _tlbl.TextXAlignment     = Enum.TextXAlignment.Left
+    _tlbl.ZIndex             = 4
+    _tlbl.Parent             = _bar
+
+    local function _makeBtn(text, xPos)
+        local b = Instance.new('TextButton')
+        b.Size             = UDim2.new(0, 115, 0, 30)
+        b.Position         = UDim2.new(0, xPos, 0, 40)
+        b.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
+        b.BorderSizePixel  = 1
+        b.BorderColor3     = Color3.fromRGB(68, 68, 68)
+        b.Text             = text
+        b.TextColor3       = Color3.fromRGB(210, 210, 210)
+        b.Font             = Enum.Font.SourceSans
+        b.TextSize         = 14
+        b.ZIndex           = 3
+        b.Parent           = _card
+        return b
+    end
+
+    local _enBtn = _makeBtn('English', 10)
+    local _esBtn = _makeBtn('Español', 145)
+
+    _enBtn.MouseButton1Click:Connect(function()
+        _lang = 'en'; _pg:Destroy(); _sel:Fire()
+    end)
+    _esBtn.MouseButton1Click:Connect(function()
+        _lang = 'es'; _pg:Destroy(); _sel:Fire()
+    end)
+
+    _sel.Event:Wait()
+    _sel:Destroy()
+
+    if _lang == 'es' then
+        loadstring(game:HttpGet('https://raw.githubusercontent.com/lowkeymyself/HowToAccountJadeShipClaudeTryHackMe/refs/heads/main/span.lua'))()
+        return
+    end
+end
+
+-- ============================================================
+-- MAIN SCRIPT (English)
+-- ============================================================
 local RS = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
