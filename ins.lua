@@ -1,99 +1,9 @@
--- ============================================================
--- LANGUAGE SELECTOR  (runs before anything else)
--- ============================================================
-do
-    local _plr = game:GetService('Players').LocalPlayer
-    local _sel  = Instance.new('BindableEvent')
-    local _lang = 'en'
-
-    local _pg = Instance.new('ScreenGui')
-    _pg.Name           = 'LangSelectGui'
-    _pg.ResetOnSpawn   = false
-    _pg.DisplayOrder   = 9999
-    _pg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    _pg.Parent         = _plr:WaitForChild('PlayerGui')
-
-    -- dim overlay
-    local _ov = Instance.new('Frame')
-    _ov.Size                 = UDim2.new(1, 0, 1, 0)
-    _ov.BackgroundColor3     = Color3.fromRGB(0, 0, 0)
-    _ov.BackgroundTransparency = 0.55
-    _ov.BorderSizePixel      = 0
-    _ov.ZIndex               = 1
-    _ov.Parent               = _pg
-
-    -- card
-    local _card = Instance.new('Frame')
-    _card.Size             = UDim2.new(0, 270, 0, 96)
-    _card.Position         = UDim2.new(0.5, -135, 0.5, -48)
-    _card.BackgroundColor3 = Color3.fromRGB(22, 22, 22)
-    _card.BorderSizePixel  = 1
-    _card.BorderColor3     = Color3.fromRGB(55, 55, 55)
-    _card.ZIndex           = 2
-    _card.Parent           = _pg
-
-    -- title bar
-    local _bar = Instance.new('Frame')
-    _bar.Size             = UDim2.new(1, 0, 0, 28)
-    _bar.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
-    _bar.BorderSizePixel  = 0
-    _bar.ZIndex           = 3
-    _bar.Parent           = _card
-
-    local _tlbl = Instance.new('TextLabel')
-    _tlbl.Size               = UDim2.new(1, -8, 1, 0)
-    _tlbl.Position           = UDim2.new(0, 8, 0, 0)
-    _tlbl.BackgroundTransparency = 1
-    _tlbl.Text               = 'Select Language / Seleccionar idioma'
-    _tlbl.TextColor3         = Color3.fromRGB(200, 200, 200)
-    _tlbl.Font               = Enum.Font.SourceSans
-    _tlbl.TextSize           = 13
-    _tlbl.TextXAlignment     = Enum.TextXAlignment.Left
-    _tlbl.ZIndex             = 4
-    _tlbl.Parent             = _bar
-
-    local function _makeBtn(text, xPos)
-        local b = Instance.new('TextButton')
-        b.Size             = UDim2.new(0, 115, 0, 30)
-        b.Position         = UDim2.new(0, xPos, 0, 40)
-        b.BackgroundColor3 = Color3.fromRGB(42, 42, 42)
-        b.BorderSizePixel  = 1
-        b.BorderColor3     = Color3.fromRGB(68, 68, 68)
-        b.Text             = text
-        b.TextColor3       = Color3.fromRGB(210, 210, 210)
-        b.Font             = Enum.Font.SourceSans
-        b.TextSize         = 14
-        b.ZIndex           = 3
-        b.Parent           = _card
-        return b
-    end
-
-    local _enBtn = _makeBtn('English', 10)
-    local _esBtn = _makeBtn('Español', 145)
-
-    _enBtn.MouseButton1Click:Connect(function()
-        _lang = 'en'; _pg:Destroy(); _sel:Fire()
-    end)
-    _esBtn.MouseButton1Click:Connect(function()
-        _lang = 'es'; _pg:Destroy(); _sel:Fire()
-    end)
-
-    _sel.Event:Wait()
-    _sel:Destroy()
-
-    if _lang == 'es' then
-        loadstring(game:HttpGet('https://raw.githubusercontent.com/lowkeymyself/HowToAccountJadeShipClaudeTryHackMe/refs/heads/main/span.lua'))()
-        return
-    end
-end
-
--- ============================================================
--- MAIN SCRIPT (English)
--- ============================================================
 local RS = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
 local plr = Players.LocalPlayer
 
 -- deduplication guard: if a previous instance is running, clean it up first
@@ -118,6 +28,10 @@ local Window = Library:CreateWindow({
     TabPadding = 8,
     MenuFadeTime = 0.2
 })
+pcall(function()
+    Library.ScreenGui.DisplayOrder = 999
+    Library.ScreenGui.Parent = CoreGui
+end)
 
 local Tabs = {
     Main     = Window:AddTab('Main'),
@@ -651,6 +565,189 @@ BikeLeft:AddButton({
 
 BikeLeft:AddDivider()
 
+BikeLeft:AddInput('WheelieStrength', {
+    Default = '8',
+    Numeric = true,
+    Finished = false,
+    Text = 'Wheelie Strength (rad/s)',
+})
+
+BikeLeft:AddToggle('WheelieBoost', {
+    Text = 'Wheelie Boost (hold C)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            _G.WheelieConn = RunService.Heartbeat:Connect(function()
+                if not UIS:IsKeyDown(Enum.KeyCode.C) then return end
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not seat or not seat:IsA('VehicleSeat') then return end
+                local strength = tonumber(Options.WheelieStrength.Value) or 8
+                local rv  = seat.CFrame.RightVector
+                local cur = seat.AssemblyAngularVelocity
+                seat.AssemblyAngularVelocity = cur + rv * (strength - cur:Dot(rv))
+            end)
+            showToast('Wheelie Boost ON — hold C')
+        else
+            if _G.WheelieConn then _G.WheelieConn:Disconnect(); _G.WheelieConn = nil end
+            showToast('Wheelie Boost OFF')
+        end
+    end
+})
+
+BikeLeft:AddToggle('WheelieLock', {
+    Text = 'Wheelie Lock (V to lock/unlock)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local locked = false
+            local lockedPitchY = 0
+
+            _G.WheelieVConn = UIS.InputBegan:Connect(function(input, gp)
+                if gp or input.KeyCode ~= Enum.KeyCode.V then return end
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not seat or not seat:IsA('VehicleSeat') then return end
+                if locked then
+                    locked = false
+                    showToast('Wheelie angle unlocked')
+                else
+                    lockedPitchY = seat.CFrame.LookVector.Y
+                    locked = true
+                    showToast('Wheelie angle locked')
+                end
+            end)
+
+            _G.WheelieLocConn = RunService.Heartbeat:Connect(function()
+                if not locked then return end
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not seat or not seat:IsA('VehicleSeat') then return end
+                local err = lockedPitchY - seat.CFrame.LookVector.Y
+                local rv  = seat.CFrame.RightVector
+                local cur = seat.AssemblyAngularVelocity
+                local correction = math.clamp(err * 15, -12, 12)
+                seat.AssemblyAngularVelocity = cur + rv * (correction - cur:Dot(rv))
+            end)
+
+            showToast('Wheelie Lock ON — press V to lock angle')
+        else
+            if _G.WheelieVConn   then _G.WheelieVConn:Disconnect();   _G.WheelieVConn   = nil end
+            if _G.WheelieLocConn then _G.WheelieLocConn:Disconnect(); _G.WheelieLocConn = nil end
+            showToast('Wheelie Lock OFF')
+        end
+    end
+})
+
+BikeLeft:AddInput('StoppieStrength', {
+    Default = '8',
+    Numeric = true,
+    Finished = false,
+    Text = 'Stoppie Strength (rad/s)',
+})
+
+BikeLeft:AddToggle('StoppieBoost', {
+    Text = 'Stoppie (hold ,)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            _G.StoppieConn = RunService.Heartbeat:Connect(function()
+                if not UIS:IsKeyDown(Enum.KeyCode.Comma) then return end
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not seat or not seat:IsA('VehicleSeat') then return end
+                local strength = tonumber(Options.StoppieStrength.Value) or 8
+                local rv  = seat.CFrame.RightVector
+                local cur = seat.AssemblyAngularVelocity
+                seat.AssemblyAngularVelocity = cur + rv * (-strength - cur:Dot(rv))
+            end)
+            showToast('Stoppie ON — hold ,')
+        else
+            if _G.StoppieConn then _G.StoppieConn:Disconnect(); _G.StoppieConn = nil end
+            showToast('Stoppie OFF')
+        end
+    end
+})
+
+BikeLeft:AddDivider()
+
+BikeLeft:AddInput('CruiseSpeedInput', {
+    Default = '40',
+    Numeric = true,
+    Finished = false,
+    Text = 'Cruise Speed (studs/s)',
+})
+
+BikeLeft:AddToggle('CruiseControl', {
+    Text = 'Cruise Control',
+    Default = false,
+    Callback = function(val)
+        if val then
+            _G.CruiseConn = RunService.Heartbeat:Connect(function()
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not seat or not seat:IsA('VehicleSeat') then return end
+                local vel = seat.AssemblyLinearVelocity
+                if vel.Magnitude < 0.5 then return end
+                local target = tonumber(Options.CruiseSpeedInput.Value) or 40
+                seat.AssemblyLinearVelocity = vel.Unit * target
+            end)
+            showToast('Cruise Control ON')
+        else
+            if _G.CruiseConn then _G.CruiseConn:Disconnect(); _G.CruiseConn = nil end
+            showToast('Cruise Control OFF')
+        end
+    end
+})
+
+BikeLeft:AddDivider()
+
+BikeLeft:AddToggle('NoWobble', {
+    Text = 'No Wobble (N to toggle)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local enabled = false
+
+            _G.NoWobbleKeyConn = UIS.InputBegan:Connect(function(input, gp)
+                if gp or input.KeyCode ~= Enum.KeyCode.N then return end
+                enabled = not enabled
+                showToast('No Wobble: ' .. (enabled and 'LOCKED' or 'released'))
+            end)
+
+            _G.NoWobbleConn = RunService.Heartbeat:Connect(function()
+                if not enabled then return end
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not seat or not seat:IsA('VehicleSeat') then return end
+                local rv  = seat.CFrame.RightVector
+                local av  = seat.AssemblyAngularVelocity
+                seat.AssemblyAngularVelocity = rv * av:Dot(rv)
+            end)
+
+            showToast('No Wobble ON — press N to lock/release')
+        else
+            if _G.NoWobbleKeyConn then _G.NoWobbleKeyConn:Disconnect(); _G.NoWobbleKeyConn = nil end
+            if _G.NoWobbleConn    then _G.NoWobbleConn:Disconnect();    _G.NoWobbleConn    = nil end
+            showToast('No Wobble OFF')
+        end
+    end
+})
+
+BikeLeft:AddDivider()
+
 BikeLeft:AddInput('AnimSpeedInput', {
     Default = '1.0',
     Numeric = true,
@@ -658,98 +755,27 @@ BikeLeft:AddInput('AnimSpeedInput', {
     Text = 'Anim Speed (multiplier)',
 })
 
-BikeLeft:AddInput('AnimFadeInput', {
-    Default = '0.3',
-    Numeric = true,
-    Finished = false,
-    Text = 'Anim Transition (seconds)',
-})
-
 BikeLeft:AddToggle('AnimTweaks', {
     Text = 'Anim Tweaks (bike only)',
     Default = false,
     Callback = function(val)
         if val then
-            local RS2 = game:GetService('RunService')
-
-            -- O(1) bike check: Humanoid.SeatPart returns the seat or nil
-            local function onBike()
+            _G.AnimConn = RunService.Heartbeat:Connect(function()
                 local char = plr.Character
                 local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
-                if not hum then return false, nil end
+                if not hum then return end
                 local seat = hum.SeatPart
-                return seat and seat:IsA('VehicleSeat'), hum
-            end
-
-            -- hook __namecall to intercept AnimationTrack:Play and
-            -- inject our custom fadeTime + speed so every animation
-            -- that the game plays while on a bike gets smooth transitions.
-            local mt    = getrawmetatable(game)
-            local oldNC = mt.__namecall
-            setreadonly(mt, false)
-            mt.__namecall = newcclosure(function(self, ...)
-                local method = getnamecallmethod()
-                if method == 'Play' then
-                    local ok2, isAnim = pcall(function()
-                        return typeof(self) == 'Instance' and self:IsA('AnimationTrack')
-                    end)
-                    if ok2 and isAnim then
-                        local riding = onBike()
-                        if riding then
-                            local fade  = tonumber(Options.AnimFadeInput.Value)  or 0.3
-                            local speed = tonumber(Options.AnimSpeedInput.Value) or 1.0
-                            -- Play(fadeTime, weight, speed)
-                            return oldNC(self, fade, 1, speed)
-                        end
-                    end
-                end
-                return oldNC(self, ...)
-            end)
-            setreadonly(mt, true)
-            _G.AnimNCHook = oldNC
-            _G.AnimMT     = mt
-
-            -- heartbeat: AdjustSpeed on already-playing tracks so
-            -- the multiplier applies even to animations that started
-            -- before the toggle was enabled. runs every 30 frames (~0.5s).
-            local tick = 0
-            _G.AnimConn = RS2.Heartbeat:Connect(function()
-                tick += 1
-                if tick < 30 then return end
-                tick = 0
-
-                local riding, hum = onBike()
-                if not riding or not hum then return end
-
+                if not seat or not seat:IsA('VehicleSeat') then return end
                 local animator = hum:FindFirstChildWhichIsA('Animator')
                 if not animator then return end
-
                 local speed = tonumber(Options.AnimSpeedInput.Value) or 1.0
                 for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
                     pcall(function() track:AdjustSpeed(speed) end)
                 end
             end)
-
             showToast('Anim tweaks ON')
         else
-            -- disconnect speed scanner
-            if _G.AnimConn then
-                _G.AnimConn:Disconnect()
-                _G.AnimConn = nil
-            end
-
-            -- restore original __namecall
-            if _G.AnimMT and _G.AnimNCHook then
-                pcall(function()
-                    setreadonly(_G.AnimMT, false)
-                    _G.AnimMT.__namecall = _G.AnimNCHook
-                    setreadonly(_G.AnimMT, true)
-                end)
-                _G.AnimNCHook = nil
-                _G.AnimMT     = nil
-            end
-
-            -- reset all currently playing tracks back to 1x speed
+            if _G.AnimConn then _G.AnimConn:Disconnect(); _G.AnimConn = nil end
             local char = plr.Character
             local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
             local anim = hum  and hum:FindFirstChildWhichIsA('Animator')
@@ -758,7 +784,6 @@ BikeLeft:AddToggle('AnimTweaks', {
                     pcall(function() track:AdjustSpeed(1) end)
                 end
             end
-
             showToast('Anim tweaks OFF')
         end
     end
@@ -936,6 +961,173 @@ Right:AddToggle('AntiFall', {
 
 Right:AddDivider()
 
+-- ---- Optimizer ---------------------------------------------------------
+Right:AddToggle('Optimizer', {
+    Text = 'Optimizer',
+    Default = false,
+    Callback = function(val)
+        if val then
+            local Lighting = game:GetService('Lighting')
+
+            -- save originals
+            local origShadows = Lighting.GlobalShadows
+            local origFogEnd  = Lighting.FogEnd
+            local origTerrain = nil
+
+            -- 1. shadows off
+            Lighting.GlobalShadows = false
+
+            -- 2. push fog to horizon (renderer skips fog blending for everything in view)
+            Lighting.FogEnd = 1e6
+
+            -- 3. terrain decorations (grass detail meshes)
+            pcall(function()
+                origTerrain = workspace.Terrain.Decoration
+                workspace.Terrain.Decoration = false
+            end)
+
+            -- 4. reduce streaming radius so fewer chunks load when moving fast
+            local origMinRadius    = nil
+            local origTargetRadius = nil
+            pcall(function()
+                origMinRadius    = workspace.StreamingMinRadius
+                origTargetRadius = workspace.StreamingTargetRadius
+                workspace.StreamingMinRadius    = 32
+                workspace.StreamingTargetRadius = 256
+            end)
+
+            -- 5. disable particles + CastShadow on all existing parts, watch new ones
+            local disabledParticles = {}
+            local function onDescendantAdded(v)
+                if v:IsA('BasePart') then
+                    pcall(function() v.CastShadow = false end)
+                elseif (v:IsA('ParticleEmitter') or v:IsA('Smoke') or v:IsA('Fire')
+                    or v:IsA('Sparkles') or v:IsA('Beam')) then
+                    if v.Enabled then
+                        pcall(function() v.Enabled = false end)
+                        table.insert(disabledParticles, v)
+                    end
+                end
+            end
+            for _, v in ipairs(workspace:GetDescendants()) do onDescendantAdded(v) end
+            local particleConn = workspace.DescendantAdded:Connect(onDescendantAdded)
+
+            -- 5. per-player connections for char respawn (re-hide accessories)
+            local charConns = {}
+            local function hideAccessories(char)
+                for _, desc in ipairs(char:GetDescendants()) do
+                    if desc:IsA('BasePart') and desc.Parent and desc.Parent:IsA('Accessory') then
+                        pcall(function() desc.LocalTransparencyModifier = 1 end)
+                    end
+                end
+            end
+            local function watchPlayer(p)
+                if p == plr then return end
+                if p.Character then hideAccessories(p.Character) end
+                local c = p.CharacterAdded:Connect(function(char)
+                    task.wait(1) -- accessories load async
+                    hideAccessories(char)
+                end)
+                table.insert(charConns, c)
+            end
+            for _, p in ipairs(Players:GetPlayers()) do watchPlayer(p) end
+            local playerAddedConn = Players.PlayerAdded:Connect(watchPlayer)
+
+            -- 6. view-culling heartbeat: hide chars + pause anims when off-screen
+            local frame = 0
+            _G.OptimizerConn = RunService.Heartbeat:Connect(function()
+                frame += 1
+                if frame < 10 then return end
+                frame = 0
+                local cam = workspace.CurrentCamera
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p == plr then continue end
+                    local char = p.Character
+                    if not char then continue end
+                    local root = char:FindFirstChild('HumanoidRootPart')
+                    if not root then continue end
+                    local _, onScreen = cam:WorldToViewportPoint(root.Position)
+                    local hum      = char:FindFirstChildWhichIsA('Humanoid')
+                    local animator = hum and hum:FindFirstChildWhichIsA('Animator')
+                    if onScreen then
+                        for _, part in ipairs(char:GetDescendants()) do
+                            if part:IsA('BasePart') then
+                                -- keep accessories hidden even when on-screen
+                                local mod = (part.Parent and part.Parent:IsA('Accessory')) and 1 or 0
+                                pcall(function() part.LocalTransparencyModifier = mod end)
+                            end
+                        end
+                        if animator then
+                            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                                pcall(function() track:AdjustSpeed(1) end)
+                            end
+                        end
+                    else
+                        for _, part in ipairs(char:GetDescendants()) do
+                            if part:IsA('BasePart') then
+                                pcall(function() part.LocalTransparencyModifier = 1 end)
+                            end
+                        end
+                        if animator then
+                            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                                pcall(function() track:AdjustSpeed(0) end)
+                            end
+                        end
+                    end
+                end
+            end)
+
+            -- cleanup closure stored for disable path and SMCleanup
+            _G.OptimizerCleanup = function()
+                Lighting.GlobalShadows = origShadows
+                Lighting.FogEnd        = origFogEnd
+                pcall(function() workspace.Terrain.Decoration = origTerrain end)
+                pcall(function()
+                    if origMinRadius    then workspace.StreamingMinRadius    = origMinRadius    end
+                    if origTargetRadius then workspace.StreamingTargetRadius = origTargetRadius end
+                end)
+                -- restore CastShadow on all workspace parts
+                for _, v in ipairs(workspace:GetDescendants()) do
+                    if v:IsA('BasePart') then pcall(function() v.CastShadow = true end) end
+                end
+                for _, v in ipairs(disabledParticles) do
+                    pcall(function() v.Enabled = true end)
+                end
+                pcall(function() particleConn:Disconnect() end)
+                pcall(function() playerAddedConn:Disconnect() end)
+                for _, c in ipairs(charConns) do pcall(function() c:Disconnect() end) end
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= plr then
+                        local char = p.Character
+                        if char then
+                            for _, part in ipairs(char:GetDescendants()) do
+                                if part:IsA('BasePart') then
+                                    pcall(function() part.LocalTransparencyModifier = 0 end)
+                                end
+                            end
+                            local hum = char:FindFirstChildWhichIsA('Humanoid')
+                            local anim = hum and hum:FindFirstChildWhichIsA('Animator')
+                            if anim then
+                                for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+                                    pcall(function() track:AdjustSpeed(1) end)
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            showToast('Optimizer ON')
+        else
+            if _G.OptimizerConn then _G.OptimizerConn:Disconnect(); _G.OptimizerConn = nil end
+            if _G.OptimizerCleanup then _G.OptimizerCleanup(); _G.OptimizerCleanup = nil end
+            showToast('Optimizer OFF')
+        end
+    end
+})
+
+Right:AddDivider()
+
 -- ---- Jump Key ----------------------------------------------------------
 Right:AddInput('JumpForceInput', {
     Default = '80',
@@ -1092,12 +1284,32 @@ Right:AddButton({
     end
 })
 
+Right:AddDivider()
 
-ThemeManager:SetLibrary(Library)
-SaveManager:SetLibrary(Library)
-SaveManager:SetFolder('BikeTool')
-ThemeManager:ApplyToTab(Tabs.Settings)
-SaveManager:BuildConfigSection(Tabs.Settings)
+Right:AddInput('FovInput', {
+    Default = '70',
+    Numeric = true,
+    Finished = false,
+    Text = 'FOV',
+})
+
+Right:AddButton({
+    Text = 'Apply FOV',
+    Func = function()
+        local fov = math.clamp(tonumber(Options.FovInput.Value) or 70, 1, 120)
+        workspace.CurrentCamera.FieldOfView = fov
+        showToast('FOV set to ' .. fov)
+    end
+})
+
+Right:AddButton({
+    Text = 'Reset FOV',
+    Func = function()
+        workspace.CurrentCamera.FieldOfView = 70
+        showToast('FOV reset to 70')
+    end
+})
+
 
 -- ============================================================
 -- MAPS TAB
@@ -1124,7 +1336,7 @@ local PasswordGate = (function()
         psg.ResetOnSpawn   = false
         psg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         psg.DisplayOrder   = 100
-        psg.Parent         = plr:WaitForChild('PlayerGui')
+        psg.Parent         = CoreGui
 
         -- card pinned to top-center
         local card = Instance.new('Frame')
@@ -1258,7 +1470,8 @@ local MAP_SLOTS = {
 -- in any other game only Clone + Export are available: grab that game's map, save it to
 -- your PC via the executor file system, then import it next time you're in the supermoto game.
 local TARGET_GAME_ID = 74559235274954
-local isTargetGame   = game.PlaceId == TARGET_GAME_ID
+if game.PlaceId ~= TARGET_GAME_ID then return end
+local isTargetGame = true
 
 local MAP_SAVE_FOLDER = 'SuperMotoMaps'
 
@@ -1913,7 +2126,6 @@ local exitBike = function()
     end
 end
 
-local RunService   = game:GetService('RunService')
 local savedFlingPos = nil
 
 local function savePos()
@@ -2518,7 +2730,7 @@ gui.Name = 'SpawnerGui'
 gui.ResetOnSpawn = false
 gui.DisplayOrder = 999
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.Parent = plr.PlayerGui
+gui.Parent = CoreGui
 
 local sfx = Instance.new('Sound')
 sfx.SoundId = 'rbxassetid://131039887376992'
@@ -2779,7 +2991,7 @@ do
     tg.DisplayOrder  = 998
     tg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     tg.Enabled       = false
-    tg.Parent        = plr.PlayerGui
+    tg.Parent        = CoreGui
     trailGui         = tg
 
     local panel = Instance.new('Frame')
@@ -3112,7 +3324,7 @@ do
     bc.DisplayOrder   = 997
     bc.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     bc.Enabled        = false
-    bc.Parent         = plr.PlayerGui
+    bc.Parent         = CoreGui
     bikeCustGui       = bc
 
     local panel = Instance.new('Frame')
@@ -3331,17 +3543,6 @@ do
         end
         do
             local r = bcRow(30)
-            bcLbl(r,'Wheels  R:',8,5,70,20)
-            local R = bcInp(r,'20',80,4,44,22); bcLbl(r,'G:',128,5,14,20)
-            local G = bcInp(r,'20',144,4,44,22); bcLbl(r,'B:',192,5,14,20)
-            local B = bcInp(r,'20',208,4,44,22)
-            bcBtn(r,'Apply Wheels',258,4,100,22).MouseButton1Click:Connect(function()
-                applyToWheels(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 20,0,255),math.clamp(tonumber(G.Text)or 20,0,255),math.clamp(tonumber(B.Text)or 20,0,255)) end)
-                showToast('Wheel color applied')
-            end)
-        end
-        do
-            local r = bcRow(30)
             bcLbl(r,'Body  R:',8,5,58,20)
             local R = bcInp(r,'255',68,4,44,22); bcLbl(r,'G:',116,5,14,20)
             local G = bcInp(r,'255',132,4,44,22); bcLbl(r,'B:',180,5,14,20)
@@ -3349,6 +3550,91 @@ do
             bcBtn(r,'Apply Body',246,4,90,22).MouseButton1Click:Connect(function()
                 applyToBody(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255)) end)
                 showToast('Body color applied')
+            end)
+        end
+        do
+            local selParts = {}
+            local partBtns = {}
+
+            local ctrlRow = bcRow(30)
+            bcLbl(ctrlRow, 'Parts:', 8, 5, 36, 20)
+            local refreshBtn = bcBtn(ctrlRow, 'Refresh', 48,  4, 72, 22)
+            local allBtn     = bcBtn(ctrlRow, 'All',    124,  4, 52, 22)
+            local noneBtn    = bcBtn(ctrlRow, 'None',   180,  4, 52, 22)
+
+            local partContainer = Instance.new('Frame')
+            partContainer.BackgroundTransparency = 1
+            partContainer.Size            = UDim2.new(1, 0, 0, 0)
+            partContainer.BorderSizePixel = 0
+            partContainer.LayoutOrder     = bcNext()
+            partContainer.ZIndex          = 11
+            partContainer.Parent          = scroll
+
+            local colorRow = bcRow(30)
+            bcLbl(colorRow, 'R:', 8, 5, 14, 20)
+            local selR = bcInp(colorRow, '255', 24, 4, 44, 22)
+            bcLbl(colorRow, 'G:', 72, 5, 14, 20)
+            local selG = bcInp(colorRow, '255', 88, 4, 44, 22)
+            bcLbl(colorRow, 'B:', 136, 5, 14, 20)
+            local selB = bcInp(colorRow, '255', 152, 4, 44, 22)
+            bcBtn(colorRow, 'Apply to Selected', 200, 4, 136, 22).MouseButton1Click:Connect(function()
+                local c = Color3.fromRGB(
+                    math.clamp(tonumber(selR.Text) or 255, 0, 255),
+                    math.clamp(tonumber(selG.Text) or 255, 0, 255),
+                    math.clamp(tonumber(selB.Text) or 255, 0, 255)
+                )
+                local n = 0
+                for part, on in pairs(selParts) do
+                    if on then part.Color = c; n = n + 1 end
+                end
+                showToast('Color applied to ' .. n .. ' part(s)')
+            end)
+
+            local function buildPartPicker()
+                for _, b in pairs(partBtns) do b:Destroy() end
+                partBtns = {}
+                selParts = {}
+                local model = getTargetModel()
+                if not model then partContainer.Size = UDim2.new(1,0,0,0); showToast('Not on a bike'); return end
+                local parts = {}
+                for _, child in ipairs(model:GetChildren()) do
+                    if child:IsA('BasePart') then table.insert(parts, child) end
+                end
+                if #parts == 0 then partContainer.Size = UDim2.new(1,0,0,0); showToast('No direct parts found'); return end
+                local cols = 2; local btnW = 200; local btnH = 22
+                local padX = 8; local gapX = 4; local rowH = 26
+                partContainer.Size = UDim2.new(1, 0, 0, math.ceil(#parts / cols) * rowH + 4)
+                for i, part in ipairs(parts) do
+                    local col = (i - 1) % cols
+                    local row = math.floor((i - 1) / cols)
+                    local btn = Instance.new('TextButton')
+                    btn.Size          = UDim2.new(0, btnW, 0, btnH)
+                    btn.Position      = UDim2.new(0, padX + col * (btnW + gapX), 0, 4 + row * rowH)
+                    btn.BackgroundColor3 = BGSUB
+                    btn.BorderSizePixel = 1; btn.BorderColor3 = BORDER
+                    btn.Text          = part.Name
+                    btn.TextColor3    = TEXT; btn.Font = Enum.Font.Gotham; btn.TextSize = 11
+                    btn.TextTruncate  = Enum.TextTruncate.AtEnd
+                    btn.ZIndex        = 12; btn.Parent = partContainer
+                    selParts[part]    = false
+                    partBtns[part]    = btn
+                    btn.MouseButton1Click:Connect(function()
+                        selParts[part] = not selParts[part]
+                        btn.BackgroundColor3 = selParts[part] and ACCENT or BGSUB
+                    end)
+                end
+            end
+
+            refreshBtn.MouseButton1Click:Connect(buildPartPicker)
+            allBtn.MouseButton1Click:Connect(function()
+                for part in pairs(selParts) do
+                    selParts[part] = true; partBtns[part].BackgroundColor3 = ACCENT
+                end
+            end)
+            noneBtn.MouseButton1Click:Connect(function()
+                for part in pairs(selParts) do
+                    selParts[part] = false; partBtns[part].BackgroundColor3 = BGSUB
+                end
             end)
         end
     end
@@ -3742,10 +4028,10 @@ local scanDone    = false
 minimapGui = Instance.new('ScreenGui')
 minimapGui.Name           = 'MinimapGui'
 minimapGui.ResetOnSpawn   = false
-minimapGui.DisplayOrder   = 200
+minimapGui.DisplayOrder   = 998
 minimapGui.Enabled        = false
 minimapGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-minimapGui.Parent         = plr.PlayerGui
+minimapGui.Parent         = CoreGui
 
 local mapFrame = Instance.new('Frame')
 mapFrame.Size               = UDim2.new(0, MAP_SMALL, 0, MAP_SMALL + 22)
@@ -4249,8 +4535,14 @@ _G.SMCleanup = function()
     -- stop any active fling loops
     _G.FlingStop = true
 
+    -- restore optimizer state (lighting, particles, players) before disconnecting conn
+    if _G.OptimizerCleanup then pcall(_G.OptimizerCleanup); _G.OptimizerCleanup = nil end
+
     -- disconnect all RunService connections
     for _, key in ipairs({'SpeedConn', 'BrakeConn', 'TurnConn', 'AnimConn', 'HitboxConn',
+                          'WheelieConn', 'WheelieVConn', 'WheelieLocConn',
+                          'StoppieConn', 'CruiseConn',
+                          'NoWobbleConn', 'NoWobbleKeyConn',
                           'AntiAdminConn', 'OptimizerConn',
                           'FlyConn', 'AntiFallConn',
                           'RainbowConn', 'TrailColorConn',
@@ -4311,13 +4603,12 @@ end
 -- SETTINGS TAB (SaveManager + ThemeManager)
 -- Must come AFTER all Toggles/Options are registered
 -- ============================================================
-local SettingsLeft  = Tabs.Settings:AddLeftGroupbox('Config')
 local SettingsRight = Tabs.Settings:AddRightGroupbox('Theme')
 
 SaveManager:SetLibrary(Library)
 SaveManager:IgnoreThemeSettings()
 SaveManager:SetFolder('Konstant')
-SaveManager:BuildConfigSection(SettingsLeft)
+SaveManager:BuildConfigSection(Tabs.Settings)
 
 ThemeManager:SetLibrary(Library)
 ThemeManager:SetFolder('Konstant')
