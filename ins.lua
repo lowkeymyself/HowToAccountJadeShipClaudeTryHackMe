@@ -4627,28 +4627,51 @@ do
         end
     end)
 
-    -- hide / unhide selected parts
-    local function ppVisApply(transparency)
+    -- hide / unhide selected parts; ppOrigTrans caches pre-hide values per BasePart
+    local ppOrigTrans = {}
+    ppHideBtn.MouseButton1Click:Connect(function()
         local n = 0
         for _, node in ipairs(ppNodeList) do
             if node.selected then
+                local parts = {}
                 if node.instance:IsA('BasePart') then
-                    pcall(function() node.instance.Transparency = transparency end)
+                    parts[#parts+1] = node.instance
                 else
                     for _, desc in ipairs(node.instance:GetDescendants()) do
-                        if desc:IsA('BasePart') then
-                            pcall(function() desc.Transparency = transparency end)
-                        end
+                        if desc:IsA('BasePart') then parts[#parts+1] = desc end
                     end
+                end
+                for _, p in ipairs(parts) do
+                    if not ppOrigTrans[p] then ppOrigTrans[p] = p.Transparency end
+                    pcall(function() p.Transparency = 1 end)
                 end
                 n += 1
             end
         end
-        if n == 0 then showToast('No parts selected')
-        else showToast((transparency == 1 and 'Hidden' or 'Unhidden') .. ' (' .. n .. ' node(s))') end
-    end
-    ppHideBtn.MouseButton1Click:Connect(function()   ppVisApply(1) end)
-    ppUnhideBtn.MouseButton1Click:Connect(function() ppVisApply(0) end)
+        if n == 0 then showToast('No parts selected') else showToast('Hidden (' .. n .. ' node(s))') end
+    end)
+    ppUnhideBtn.MouseButton1Click:Connect(function()
+        local n = 0
+        for _, node in ipairs(ppNodeList) do
+            if node.selected then
+                local parts = {}
+                if node.instance:IsA('BasePart') then
+                    parts[#parts+1] = node.instance
+                else
+                    for _, desc in ipairs(node.instance:GetDescendants()) do
+                        if desc:IsA('BasePart') then parts[#parts+1] = desc end
+                    end
+                end
+                for _, p in ipairs(parts) do
+                    local orig = ppOrigTrans[p]
+                    pcall(function() p.Transparency = orig or 0 end)
+                    ppOrigTrans[p] = nil
+                end
+                n += 1
+            end
+        end
+        if n == 0 then showToast('No parts selected') else showToast('Unhidden (' .. n .. ' node(s))') end
+    end)
 
     -- expose cleanup so SMCleanup can clear in-game outlines on reload
     _G.PPCleanup = ppClearSelBoxes
