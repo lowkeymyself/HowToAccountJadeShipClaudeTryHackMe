@@ -494,6 +494,34 @@ BikeLeft:AddToggle('SpawnerToggle', {
 
 BikeLeft:AddDivider()
 
+local clonedBikes = {}
+
+BikeLeft:AddButton({
+    Text = 'Clone Bike',
+    Func = function()
+        local char = plr.Character
+        local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+        if not hum or not hum.SeatPart then showToast('Not on a bike'); return end
+        local model = hum.SeatPart.Parent
+        local clone = model:Clone()
+        clone:PivotTo(model:GetPivot() * CFrame.new((#clonedBikes + 1) * 10, 0, 0))
+        clone.Parent = workspace
+        table.insert(clonedBikes, clone)
+        showToast('Bike cloned (' .. #clonedBikes .. ' clones)')
+    end
+})
+
+BikeLeft:AddButton({
+    Text = 'Clear Cloned Bikes',
+    Func = function()
+        for _, b in ipairs(clonedBikes) do pcall(function() b:Destroy() end) end
+        clonedBikes = {}
+        showToast('Cloned bikes cleared')
+    end
+})
+
+BikeLeft:AddDivider()
+
 -- forward-declared so HitboxViewer toggle (defined in this groupbox) and
 -- the Troll section (which does the full definitions) share the same upvalues
 local hitboxMap      = {}
@@ -516,31 +544,6 @@ local function cachedRoot(stored)
     local _, r = getBikeRoot()
     return r
 end
-
-BikeLeft:AddInput('GravityInput', {
-    Default = '196.2',
-    Numeric = true,
-    Finished = false,
-    Text = 'Gravity (default 196.2)',
-})
-
-BikeLeft:AddToggle('CustomGravity', {
-    Text = 'Custom Gravity',
-    Default = false,
-    Callback = function(val)
-        if val then
-            _G.OriginalGravity = workspace.Gravity  -- save game's actual default
-            local g = tonumber(Options.GravityInput.Value) or _G.OriginalGravity
-            workspace.Gravity = g
-            showToast('Gravity: ' .. g .. '  (was ' .. _G.OriginalGravity .. ')')
-        else
-            workspace.Gravity = _G.OriginalGravity or 196.2
-            showToast('Gravity restored to ' .. workspace.Gravity)
-        end
-    end
-})
-
-BikeLeft:AddDivider()
 
 BikeLeft:AddInput('BrakeInput', {
     Default = '120',
@@ -3864,7 +3867,70 @@ do
     do
         bcSecHdr('CONFIGS')
 
+        local CFG_FILE = 'Konstant/bike_appearance_configs.json'
+
+        local function cfgSerialize(tbl)
+            -- Color3 -> array, Enum -> string
+            local out = {}
+            for name, partData in pairs(tbl) do
+                local pd = {}
+                for k, v in pairs(partData) do
+                    if typeof(v) == 'Color3' then
+                        pd[k] = { _c3 = true, r = v.R, g = v.G, b = v.B }
+                    elseif typeof(v) == 'EnumItem' then
+                        pd[k] = { _enum = true, v = tostring(v) }
+                    else
+                        pd[k] = v
+                    end
+                end
+                out[name] = pd
+            end
+            return game:GetService('HttpService'):JSONEncode(out)
+        end
+
+        local function cfgDeserialize(json)
+            local raw = game:GetService('HttpService'):JSONDecode(json)
+            local out = {}
+            for name, partData in pairs(raw) do
+                local pd = {}
+                for k, v in pairs(partData) do
+                    if type(v) == 'table' and v._c3 then
+                        pd[k] = Color3.new(v.r, v.g, v.b)
+                    elseif type(v) == 'table' and v._enum then
+                        local ok, enumVal = pcall(function()
+                            local parts = v.v:split('.')
+                            return Enum[parts[2]][parts[3]]
+                        end)
+                        pd[k] = ok and enumVal or v.v
+                    else
+                        pd[k] = v
+                    end
+                end
+                out[name] = pd
+            end
+            return out
+        end
+
+        local function cfgFlushToDisk(tbl)
+            if type(writefile) ~= 'function' then return end
+            pcall(function()
+                if type(makefolder) == 'function' then pcall(makefolder, 'Konstant') end
+                writefile(CFG_FILE, cfgSerialize(tbl))
+            end)
+        end
+
         local cfgTable   = {}   -- { [name] = { [partName] = {...} } }
+        do
+            -- load persisted configs from disk on startup
+            if type(readfile) == 'function' then
+                pcall(function()
+                    local content = readfile(CFG_FILE)
+                    if content and content ~= '' then
+                        cfgTable = cfgDeserialize(content)
+                    end
+                end)
+            end
+        end
         local cfgSelName = ''
 
         -- row 1: name input + save + delete
@@ -3974,6 +4040,16 @@ do
 
         cfgDdBtn.MouseButton1Click:Connect(cfgTogglePopup)
 
+        -- show first loaded config name in label if configs came from disk
+        do
+            local names = {}; for n in pairs(cfgTable) do table.insert(names, n) end
+            table.sort(names)
+            if #names > 0 then
+                cfgSelName = names[1]
+                cfgDdLbl.Text = names[1]; cfgDdLbl.TextColor3 = TEXT
+            end
+        end
+
         -- save
         cfgSaveBtn.MouseButton1Click:Connect(function()
             local name = cfgNameInp.Text
@@ -3993,6 +4069,7 @@ do
                 end
             end
             cfgTable[name] = data
+            cfgFlushToDisk(cfgTable)
             cfgSelName = name
             cfgDdLbl.Text = name; cfgDdLbl.TextColor3 = TEXT
             showToast('Saved "' .. name .. '"')
@@ -4002,7 +4079,9 @@ do
         cfgDelBtn.MouseButton1Click:Connect(function()
             if cfgSelName == '' then showToast('No config selected'); return end
             local deleted = cfgSelName
-            cfgTable[cfgSelName] = nil; cfgSelName = ''
+            cfgTable[cfgSelName] = nil
+            cfgFlushToDisk(cfgTable)
+            cfgSelName = ''
             cfgDdLbl.Text = 'No configs saved'; cfgDdLbl.TextColor3 = SUBTEXT
             cfgPopup.Visible = false; cfgPopupOpen = false; cfgDdArrow.Text = '▼'
             showToast('Deleted "' .. deleted .. '"')
@@ -5399,6 +5478,10 @@ _G.SMCleanup = function()
     pcall(clearSpeedTags)
     pcall(clearPlayerESP)
 
+    -- destroy cloned bikes
+    for _, b in ipairs(clonedBikes) do pcall(function() b:Destroy() end) end
+    clonedBikes = {}
+
     -- unfreeze bike if still frozen
     if _G.FrozenBikeParts then
         for p in pairs(_G.FrozenBikeParts) do
@@ -5436,5 +5519,8 @@ ThemeManager:SetLibrary(Library)
 ThemeManager:SetFolder('Konstant')
 ThemeManager:ApplyToGroupbox(SettingsRight)
 
--- Load autoload config last, after all UI elements exist
-SaveManager:LoadAutoloadConfig()
+-- Load autoload config after a short delay so all game systems finish initializing
+-- before toggle callbacks fire (loading immediately breaks the game on join)
+task.delay(3, function()
+    SaveManager:LoadAutoloadConfig()
+end)
