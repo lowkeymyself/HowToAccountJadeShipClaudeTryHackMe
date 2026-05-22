@@ -239,6 +239,129 @@ Left:AddToggle('StreamOptimizer', {
     end
 })
 
+BikeLeft:AddToggle('AutoFixBike', {
+    Text = 'Auto-fix Bike',
+    Default = false,
+    Callback = function(val)
+        local function isWheelPart(p)
+            local n = p.Name:lower()
+            return n:find('wheel') or n:find('tire') or n:find('tyre') or n:find('rim') or n:find('hub')
+        end
+
+        local function findBackWheel(model, seat)
+            local backWheel, bestZ = nil, math.huge
+            for _, p in ipairs(model:GetDescendants()) do
+                if p:IsA('BasePart') and isWheelPart(p) then
+                    local lz = seat.CFrame:ToObjectSpace(CFrame.new(p.Position)).Z
+                    if lz < bestZ then bestZ = lz; backWheel = p end
+                end
+            end
+            return backWheel
+        end
+
+        local function findProximityPrompt(model)
+            for _, v in ipairs(model:GetDescendants()) do
+                if v:IsA('ProximityPrompt') then return v end
+            end
+            return nil
+        end
+
+        local function gearText()
+            for _, v in ipairs(plr.PlayerGui:GetDescendants()) do
+                if v:IsA('TextLabel') and v.Visible
+                and (v.Text == '-' or v.Text == 'N') then
+                    return v.Text
+                end
+            end
+            return nil
+        end
+
+        local function eject(seat, hum)
+            pcall(function() seat.Disabled = true end)
+            task.wait(0.05)
+            pcall(function() seat.Disabled = false end)
+            if hum.SeatPart ~= nil then
+                pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+            end
+        end
+
+        local function ejectAndRemount(seat, hum, pp)
+            eject(seat, hum)
+            task.wait(0.1)
+            if pp then pcall(function() fireproximityprompt(pp) end)
+            else pcall(function() seat:Sit(hum) end) end
+        end
+
+        local fixInProgress = {}
+
+        local function setupFixWatcher(char)
+            if _G.AutoFixSeatConn then _G.AutoFixSeatConn:Disconnect(); _G.AutoFixSeatConn = nil end
+            local hum = char and char:FindFirstChildWhichIsA('Humanoid')
+            if not hum then return end
+            _G.AutoFixSeatConn = hum:GetPropertyChangedSignal('SeatPart'):Connect(function()
+                local seat = hum.SeatPart
+                if not seat or not seat:IsA('VehicleSeat') then return end
+                if fixInProgress[seat] then return end
+                fixInProgress[seat] = true
+
+                local backWheel = findBackWheel(seat.Parent, seat)
+                local snapCF    = backWheel and backWheel.CFrame
+                local pp        = findProximityPrompt(seat.Parent)
+
+                task.spawn(function()
+                    if backWheel and snapCF then
+                        local elapsed = 0
+                        local lockConn; lockConn = RunService.Heartbeat:Connect(function(dt)
+                            elapsed += dt
+                            if elapsed > 0.8 or hum.SeatPart ~= seat then
+                                lockConn:Disconnect(); return
+                            end
+                            pcall(function() backWheel.CFrame = snapCF end)
+                        end)
+                    end
+
+                    local deadline = tick() + 2
+                    while tick() < deadline do
+                        if hum.SeatPart ~= seat then fixInProgress[seat] = nil; return end
+                        if gearText() then break end
+                        RunService.Heartbeat:Wait()
+                    end
+                    if hum.SeatPart ~= seat then fixInProgress[seat] = nil; return end
+
+                    for attempt = 1, 5 do
+                        if hum.SeatPart ~= seat then break end
+                        local g = gearText()
+                        if g == 'N' then
+                            if attempt > 1 then showToast('Bike fixed (attempt ' .. attempt .. ')') end
+                            break
+                        end
+                        if g ~= '-' then break end
+                        ejectAndRemount(seat, hum, pp)
+                        task.wait(0.5)
+                    end
+
+                    fixInProgress[seat] = nil
+                end)
+            end)
+        end
+
+        if val then
+            setupFixWatcher(plr.Character)
+            _G.AutoFixCharConn = plr.CharacterAdded:Connect(function(char)
+                task.wait(1)
+                setupFixWatcher(char)
+            end)
+            showToast('Auto-fix Bike ON')
+        else
+            if _G.AutoFixSeatConn then _G.AutoFixSeatConn:Disconnect(); _G.AutoFixSeatConn = nil end
+            if _G.AutoFixCharConn then _G.AutoFixCharConn:Disconnect(); _G.AutoFixCharConn = nil end
+            showToast('Auto-fix Bike OFF')
+        end
+    end
+})
+
+BikeLeft:AddDivider()
+
 BikeLeft:AddButton({
     Text = 'Get All Bikes',
     Func = function()
@@ -3200,6 +3323,7 @@ end
 -- ============================================================
 do
     local _scooterMode = false
+    _G._scooterMode = false
 
     local function getTargetModel()
         local char = plr.Character
@@ -3225,15 +3349,24 @@ do
             or n:find('rim') or n:find('hub')
     end
 
-    local function applyToAll(fn)
+    local function applySA(p, saFn)
+        if not saFn then return end
+        local sa = p:FindFirstChildOfClass('SurfaceAppearance')
+        if sa then pcall(saFn, sa) end
+    end
+
+    local function applyToAll(fn, saFn)
         local model = getTargetModel()
         if not model then showToast('Not on a bike'); return end
         for _, p in ipairs(model:GetDescendants()) do
-            if p:IsA('BasePart') then pcall(fn, p) end
+            if p:IsA('BasePart') then
+                pcall(fn, p)
+                applySA(p, saFn)
+            end
         end
     end
 
-    local function applyToWheels(fn)
+    local function applyToWheels(fn, saFn)
         local model = getTargetModel()
         if not model then showToast('Not on a bike'); return end
         local parts = {}
@@ -3249,10 +3382,13 @@ do
                 end
             end
         end
-        for _, p in ipairs(parts) do pcall(fn, p) end
+        for _, p in ipairs(parts) do
+            pcall(fn, p)
+            applySA(p, saFn)
+        end
     end
 
-    local function applyToBody(fn)
+    local function applyToBody(fn, saFn)
         local model = getTargetModel()
         if not model then showToast('Not on a bike'); return end
         local wheelSet = {}
@@ -3262,12 +3398,11 @@ do
         local hasNamed = next(wheelSet) ~= nil
         for _, p in ipairs(model:GetDescendants()) do
             if p:IsA('BasePart') then
-                if hasNamed then
-                    if not wheelSet[p] then pcall(fn, p) end
-                else
-                    if not (p:IsA('Part') and p.Shape == Enum.PartType.Cylinder) then
-                        pcall(fn, p)
-                    end
+                local skip = hasNamed and wheelSet[p]
+                    or (not hasNamed and p:IsA('Part') and p.Shape == Enum.PartType.Cylinder)
+                if not skip then
+                    pcall(fn, p)
+                    applySA(p, saFn)
                 end
             end
         end
@@ -3346,6 +3481,7 @@ do
         stb.Font = Enum.Font.GothamBold; stb.TextSize = 11; stb.ZIndex = 12; stb.Parent = titleBar
         stb.MouseButton1Click:Connect(function()
             _scooterMode = not _scooterMode
+            _G._scooterMode = _scooterMode
             if _scooterMode then stb.BackgroundColor3 = ACCENT; stb.TextColor3 = TEXT; stb.Text = 'ON'
             else stb.BackgroundColor3 = BGSUB; stb.TextColor3 = SUBTEXT; stb.Text = 'OFF' end
             showToast('Scooter mode: ' .. (_scooterMode and 'ON' or 'OFF'))
@@ -3486,7 +3622,7 @@ do
             b.BackgroundColor3 = c
             b.TextColor3 = (e[2] > 200 and e[3] > 200) and Color3.fromRGB(20,20,20) or Color3.fromRGB(255,255,255)
             b.MouseButton1Click:Connect(function()
-                applyToAll(function(p) p.Color = c end)
+                applyToAll(function(p) p.Color = c end, function(sa) sa.Color = c end)
                 showToast(e[1] .. ' applied')
             end)
         end
@@ -3504,7 +3640,8 @@ do
             local G = bcInp(r,'255',160,4,44,22); bcLbl(r,'B:',208,5,14,20)
             local B = bcInp(r,'255',224,4,44,22)
             bcBtn(r,'Apply All',274,4,80,22).MouseButton1Click:Connect(function()
-                applyToAll(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255)) end)
+                local c = Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255))
+                applyToAll(function(p) p.Color=c end, function(sa) sa.Color=c end)
                 showToast('Color applied to all parts')
             end)
         end
@@ -3515,7 +3652,8 @@ do
             local G = bcInp(r,'255',132,4,44,22); bcLbl(r,'B:',180,5,14,20)
             local B = bcInp(r,'255',196,4,44,22)
             bcBtn(r,'Apply Body',246,4,90,22).MouseButton1Click:Connect(function()
-                applyToBody(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255)) end)
+                local c = Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255))
+                applyToBody(function(p) p.Color=c end, function(sa) sa.Color=c end)
                 showToast('Body color applied')
             end)
         end
@@ -3526,7 +3664,8 @@ do
             local G = bcInp(r,'255',136,4,44,22); bcLbl(r,'B:',184,5,14,20)
             local B = bcInp(r,'255',200,4,44,22)
             bcBtn(r,'Apply Wheels',250,4,96,22).MouseButton1Click:Connect(function()
-                applyToWheels(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255)) end)
+                local c = Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255))
+                applyToWheels(function(p) p.Color=c end, function(sa) sa.Color=c end)
                 showToast('Wheel color applied')
             end)
         end
@@ -4283,16 +4422,20 @@ do
         ppNodeList = {}
     end
 
-    -- walk up from the seated VehicleSeat until we hit a direct child of workspace
     local function ppGetRootModel()
         local char = plr.Character
         local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
         if not hum or not hum.SeatPart then return nil end
-        local cur = hum.SeatPart
-        while cur.Parent and cur.Parent ~= workspace do
-            cur = cur.Parent
+        if _G._scooterMode then
+            local cur = hum.SeatPart
+            while cur.Parent and cur.Parent ~= workspace do
+                cur = cur.Parent
+            end
+            return cur:IsA('Model') and cur or nil
+        else
+            local base = hum.SeatPart.Parent
+            return base and base:IsA('Model') and base or nil
         end
-        return cur:IsA('Model') and cur or nil
     end
 
     local function ppBuildTree()
@@ -4598,18 +4741,19 @@ do
     ppApplyBtn.MouseButton1Click:Connect(function()
         local c = ppPickedColor
         local painted = {}
+        local function paintPart(p)
+            if painted[p] then return end
+            pcall(function() p.Color = c end)
+            local sa = p:FindFirstChildOfClass('SurfaceAppearance')
+            if sa then pcall(function() sa.Color = c end) end
+            painted[p] = true
+        end
         local function paintInst(inst)
             if inst:IsA('BasePart') then
-                if not painted[inst] then
-                    pcall(function() inst.Color = c end)
-                    painted[inst] = true
-                end
+                paintPart(inst)
             else
                 for _, desc in ipairs(inst:GetDescendants()) do
-                    if desc:IsA('BasePart') and not painted[desc] then
-                        pcall(function() desc.Color = c end)
-                        painted[desc] = true
-                    end
+                    if desc:IsA('BasePart') then paintPart(desc) end
                 end
             end
         end
@@ -5219,7 +5363,8 @@ _G.SMCleanup = function()
                           'RainbowConn', 'TrailColorConn',
                           'AdminESPConn', 'BikeESPConn', 'SpeedTagConn', 'SpeedTagLeaveConn',
                           'PlayerESPConn', 'PlayerESPCharConn',
-                          'JumpKeyConn'}) do
+                          'JumpKeyConn',
+                          'AutoFixSeatConn', 'AutoFixCharConn'}) do
         if _G[key] then
             pcall(function() _G[key]:Disconnect() end)
             _G[key] = nil
