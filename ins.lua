@@ -840,7 +840,8 @@ local trailSettings = {
     rainbow       = false,
 }
 local trailGui    = nil  -- assigned when trail panel is built below
-local bikeCustGui = nil  -- assigned when bike customization panel is built below
+local bikeCustGui   = nil  -- assigned when bike customization panel is built below
+local partPickerGui = nil  -- assigned when part picker panel is built below
 
 Right:AddDivider()
 
@@ -977,10 +978,10 @@ Right:AddToggle('Optimizer', {
             -- 1. shadows off
             Lighting.GlobalShadows = false
 
-            -- 2. push fog to horizon (renderer skips fog blending for everything in view)
+            -- 2. push fog to horizon
             Lighting.FogEnd = 1e6
 
-            -- 3. terrain decorations (grass detail meshes)
+            -- 3. terrain decorations
             pcall(function()
                 origTerrain = workspace.Terrain.Decoration
                 workspace.Terrain.Decoration = false
@@ -996,82 +997,46 @@ Right:AddToggle('Optimizer', {
                 workspace.StreamingTargetRadius = 256
             end)
 
-            -- 5. disable particles + CastShadow on all existing parts, watch new ones
+            -- 5. RenderFidelity=Performance on all parts (real GPU gain via lowest-LOD mesh)
+            --    + CastShadow=false + disable particles
+            local origFidelity      = {}
             local disabledParticles = {}
+
             local function onDescendantAdded(v)
                 if v:IsA('BasePart') then
-                    pcall(function() v.CastShadow = false end)
-                elseif (v:IsA('ParticleEmitter') or v:IsA('Smoke') or v:IsA('Fire')
-                    or v:IsA('Sparkles') or v:IsA('Beam')) then
+                    pcall(function()
+                        origFidelity[v] = v.RenderFidelity
+                        v.RenderFidelity = Enum.RenderFidelity.Performance
+                        v.CastShadow    = false
+                    end)
+                elseif v:IsA('ParticleEmitter') or v:IsA('Smoke') or v:IsA('Fire')
+                    or v:IsA('Sparkles') or v:IsA('Beam') then
                     if v.Enabled then
                         pcall(function() v.Enabled = false end)
                         table.insert(disabledParticles, v)
                     end
                 end
             end
+
             for _, v in ipairs(workspace:GetDescendants()) do onDescendantAdded(v) end
             local particleConn = workspace.DescendantAdded:Connect(onDescendantAdded)
 
-            -- 5. per-player connections for char respawn (re-hide accessories)
-            local charConns = {}
-            local function hideAccessories(char)
-                for _, desc in ipairs(char:GetDescendants()) do
-                    if desc:IsA('BasePart') and desc.Parent and desc.Parent:IsA('Accessory') then
-                        pcall(function() desc.LocalTransparencyModifier = 1 end)
-                    end
-                end
-            end
-            local function watchPlayer(p)
-                if p == plr then return end
-                if p.Character then hideAccessories(p.Character) end
-                local c = p.CharacterAdded:Connect(function(char)
-                    task.wait(1) -- accessories load async
-                    hideAccessories(char)
-                end)
-                table.insert(charConns, c)
-            end
-            for _, p in ipairs(Players:GetPlayers()) do watchPlayer(p) end
-            local playerAddedConn = Players.PlayerAdded:Connect(watchPlayer)
-
-            -- 6. view-culling heartbeat: hide chars + pause anims when off-screen
+            -- 6. pause ALL other players' animations (bone transforms are CPU-heavy)
+            --    runs every 30 frames to avoid per-frame overhead
             local frame = 0
             _G.OptimizerConn = RunService.Heartbeat:Connect(function()
                 frame += 1
-                if frame < 10 then return end
+                if frame < 30 then return end
                 frame = 0
-                local cam = workspace.CurrentCamera
                 for _, p in ipairs(Players:GetPlayers()) do
                     if p == plr then continue end
                     local char = p.Character
                     if not char then continue end
-                    local root = char:FindFirstChild('HumanoidRootPart')
-                    if not root then continue end
-                    local _, onScreen = cam:WorldToViewportPoint(root.Position)
                     local hum      = char:FindFirstChildWhichIsA('Humanoid')
                     local animator = hum and hum:FindFirstChildWhichIsA('Animator')
-                    if onScreen then
-                        for _, part in ipairs(char:GetDescendants()) do
-                            if part:IsA('BasePart') then
-                                -- keep accessories hidden even when on-screen
-                                local mod = (part.Parent and part.Parent:IsA('Accessory')) and 1 or 0
-                                pcall(function() part.LocalTransparencyModifier = mod end)
-                            end
-                        end
-                        if animator then
-                            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                                pcall(function() track:AdjustSpeed(1) end)
-                            end
-                        end
-                    else
-                        for _, part in ipairs(char:GetDescendants()) do
-                            if part:IsA('BasePart') then
-                                pcall(function() part.LocalTransparencyModifier = 1 end)
-                            end
-                        end
-                        if animator then
-                            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                                pcall(function() track:AdjustSpeed(0) end)
-                            end
+                    if animator then
+                        for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                            pcall(function() track:AdjustSpeed(0) end)
                         end
                     end
                 end
@@ -1086,31 +1051,28 @@ Right:AddToggle('Optimizer', {
                     if origMinRadius    then workspace.StreamingMinRadius    = origMinRadius    end
                     if origTargetRadius then workspace.StreamingTargetRadius = origTargetRadius end
                 end)
-                -- restore CastShadow on all workspace parts
-                for _, v in ipairs(workspace:GetDescendants()) do
-                    if v:IsA('BasePart') then pcall(function() v.CastShadow = true end) end
+                -- restore RenderFidelity + CastShadow on every part we touched
+                for part, fidelity in pairs(origFidelity) do
+                    pcall(function()
+                        part.RenderFidelity = fidelity
+                        part.CastShadow     = true
+                    end)
                 end
+                -- re-enable particles
                 for _, v in ipairs(disabledParticles) do
                     pcall(function() v.Enabled = true end)
                 end
                 pcall(function() particleConn:Disconnect() end)
-                pcall(function() playerAddedConn:Disconnect() end)
-                for _, c in ipairs(charConns) do pcall(function() c:Disconnect() end) end
+                -- restore all other players' animation speeds to normal
                 for _, p in ipairs(Players:GetPlayers()) do
                     if p ~= plr then
                         local char = p.Character
-                        if char then
-                            for _, part in ipairs(char:GetDescendants()) do
-                                if part:IsA('BasePart') then
-                                    pcall(function() part.LocalTransparencyModifier = 0 end)
-                                end
-                            end
-                            local hum = char:FindFirstChildWhichIsA('Humanoid')
-                            local anim = hum and hum:FindFirstChildWhichIsA('Animator')
-                            if anim then
-                                for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
-                                    pcall(function() track:AdjustSpeed(1) end)
-                                end
+                        if not char then continue end
+                        local hum  = char:FindFirstChildWhichIsA('Humanoid')
+                        local anim = hum and hum:FindFirstChildWhichIsA('Animator')
+                        if anim then
+                            for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+                                pcall(function() track:AdjustSpeed(1) end)
                             end
                         end
                     end
@@ -2995,8 +2957,8 @@ do
     trailGui         = tg
 
     local panel = Instance.new('Frame')
-    panel.Size             = UDim2.new(0, 360, 0, 430)
-    panel.Position         = UDim2.new(0.5, -460, 0.5, -215)
+    panel.Size             = UDim2.new(0, 360, 0, 500)
+    panel.Position         = UDim2.new(0.5, -460, 0.5, -250)
     panel.BackgroundColor3 = BG2
     panel.BorderSizePixel  = 1
     panel.BorderColor3     = BORDER
@@ -3083,19 +3045,19 @@ do
         box.ZIndex = 11
         box.Parent = panel
         box.FocusLost:Connect(function() onChanged(box.Text) end)
-        rowY += 28
+        rowY += 32
         return box
     end
 
     local function makeDivLine()
         local line = Instance.new('Frame')
         line.Size = UDim2.new(1, -20, 0, 1)
-        line.Position = UDim2.new(0, 10, 0, rowY + 4)
+        line.Position = UDim2.new(0, 10, 0, rowY + 6)
         line.BackgroundColor3 = BORDER
         line.BorderSizePixel = 0
         line.ZIndex = 11
         line.Parent = panel
-        rowY += 14
+        rowY += 18
     end
 
     -- Type preset buttons
@@ -3137,7 +3099,7 @@ do
             end
         end)
     end
-    rowY += 32
+    rowY += 36
 
     -- Custom Texture ID
     local texBox = makeRow('Texture ID', '', function(v)
@@ -3418,8 +3380,13 @@ do
     local _bcOrder = 0
     local function bcNext() _bcOrder = _bcOrder + 1; return _bcOrder end
     local function bcSecHdr(label)
+        if _bcOrder > 0 then
+            local gap = Instance.new('Frame')
+            gap.Size = UDim2.new(1,0,0,6); gap.BackgroundTransparency = 1
+            gap.BorderSizePixel = 0; gap.LayoutOrder = bcNext(); gap.ZIndex = 11; gap.Parent = scroll
+        end
         local f = Instance.new('Frame')
-        f.Size = UDim2.new(1,0,0,26); f.BackgroundColor3 = BGSUB
+        f.Size = UDim2.new(1,0,0,28); f.BackgroundColor3 = BGSUB
         f.BorderSizePixel = 0; f.LayoutOrder = bcNext(); f.ZIndex = 11; f.Parent = scroll
         local l = Instance.new('TextLabel')
         l.Size = UDim2.new(1,-10,1,0); l.Position = UDim2.new(0,10,0,0)
@@ -3429,7 +3396,7 @@ do
     end
     local function bcRow(h)
         local f = Instance.new('Frame')
-        f.Size = UDim2.new(1,0,0,h or 28); f.BackgroundTransparency = 1
+        f.Size = UDim2.new(1,0,0,h or 32); f.BackgroundTransparency = 1
         f.LayoutOrder = bcNext(); f.ZIndex = 11; f.Parent = scroll
         return f
     end
@@ -3531,7 +3498,7 @@ do
     do
         bcSecHdr('CUSTOM COLOR')
         do
-            local r = bcRow(30)
+            local r = bcRow(34)
             bcLbl(r,'All Parts  R:',8,5,86,20)
             local R = bcInp(r,'255',96,4,44,22); bcLbl(r,'G:',144,5,14,20)
             local G = bcInp(r,'255',160,4,44,22); bcLbl(r,'B:',208,5,14,20)
@@ -3542,7 +3509,7 @@ do
             end)
         end
         do
-            local r = bcRow(30)
+            local r = bcRow(34)
             bcLbl(r,'Body  R:',8,5,58,20)
             local R = bcInp(r,'255',68,4,44,22); bcLbl(r,'G:',116,5,14,20)
             local G = bcInp(r,'255',132,4,44,22); bcLbl(r,'B:',180,5,14,20)
@@ -3553,88 +3520,21 @@ do
             end)
         end
         do
-            local selParts = {}
-            local partBtns = {}
-
-            local ctrlRow = bcRow(30)
-            bcLbl(ctrlRow, 'Parts:', 8, 5, 36, 20)
-            local refreshBtn = bcBtn(ctrlRow, 'Refresh', 48,  4, 72, 22)
-            local allBtn     = bcBtn(ctrlRow, 'All',    124,  4, 52, 22)
-            local noneBtn    = bcBtn(ctrlRow, 'None',   180,  4, 52, 22)
-
-            local partContainer = Instance.new('Frame')
-            partContainer.BackgroundTransparency = 1
-            partContainer.Size            = UDim2.new(1, 0, 0, 0)
-            partContainer.BorderSizePixel = 0
-            partContainer.LayoutOrder     = bcNext()
-            partContainer.ZIndex          = 11
-            partContainer.Parent          = scroll
-
-            local colorRow = bcRow(30)
-            bcLbl(colorRow, 'R:', 8, 5, 14, 20)
-            local selR = bcInp(colorRow, '255', 24, 4, 44, 22)
-            bcLbl(colorRow, 'G:', 72, 5, 14, 20)
-            local selG = bcInp(colorRow, '255', 88, 4, 44, 22)
-            bcLbl(colorRow, 'B:', 136, 5, 14, 20)
-            local selB = bcInp(colorRow, '255', 152, 4, 44, 22)
-            bcBtn(colorRow, 'Apply to Selected', 200, 4, 136, 22).MouseButton1Click:Connect(function()
-                local c = Color3.fromRGB(
-                    math.clamp(tonumber(selR.Text) or 255, 0, 255),
-                    math.clamp(tonumber(selG.Text) or 255, 0, 255),
-                    math.clamp(tonumber(selB.Text) or 255, 0, 255)
-                )
-                local n = 0
-                for part, on in pairs(selParts) do
-                    if on then part.Color = c; n = n + 1 end
-                end
-                showToast('Color applied to ' .. n .. ' part(s)')
+            local r = bcRow(34)
+            bcLbl(r,'Wheels R:',8,5,62,20)
+            local R = bcInp(r,'255',72,4,44,22); bcLbl(r,'G:',120,5,14,20)
+            local G = bcInp(r,'255',136,4,44,22); bcLbl(r,'B:',184,5,14,20)
+            local B = bcInp(r,'255',200,4,44,22)
+            bcBtn(r,'Apply Wheels',250,4,96,22).MouseButton1Click:Connect(function()
+                applyToWheels(function(p) p.Color=Color3.fromRGB(math.clamp(tonumber(R.Text)or 255,0,255),math.clamp(tonumber(G.Text)or 255,0,255),math.clamp(tonumber(B.Text)or 255,0,255)) end)
+                showToast('Wheel color applied')
             end)
-
-            local function buildPartPicker()
-                for _, b in pairs(partBtns) do b:Destroy() end
-                partBtns = {}
-                selParts = {}
-                local model = getTargetModel()
-                if not model then partContainer.Size = UDim2.new(1,0,0,0); showToast('Not on a bike'); return end
-                local parts = {}
-                for _, child in ipairs(model:GetChildren()) do
-                    if child:IsA('BasePart') then table.insert(parts, child) end
-                end
-                if #parts == 0 then partContainer.Size = UDim2.new(1,0,0,0); showToast('No direct parts found'); return end
-                local cols = 2; local btnW = 200; local btnH = 22
-                local padX = 8; local gapX = 4; local rowH = 26
-                partContainer.Size = UDim2.new(1, 0, 0, math.ceil(#parts / cols) * rowH + 4)
-                for i, part in ipairs(parts) do
-                    local col = (i - 1) % cols
-                    local row = math.floor((i - 1) / cols)
-                    local btn = Instance.new('TextButton')
-                    btn.Size          = UDim2.new(0, btnW, 0, btnH)
-                    btn.Position      = UDim2.new(0, padX + col * (btnW + gapX), 0, 4 + row * rowH)
-                    btn.BackgroundColor3 = BGSUB
-                    btn.BorderSizePixel = 1; btn.BorderColor3 = BORDER
-                    btn.Text          = part.Name
-                    btn.TextColor3    = TEXT; btn.Font = Enum.Font.Gotham; btn.TextSize = 11
-                    btn.TextTruncate  = Enum.TextTruncate.AtEnd
-                    btn.ZIndex        = 12; btn.Parent = partContainer
-                    selParts[part]    = false
-                    partBtns[part]    = btn
-                    btn.MouseButton1Click:Connect(function()
-                        selParts[part] = not selParts[part]
-                        btn.BackgroundColor3 = selParts[part] and ACCENT or BGSUB
-                    end)
-                end
-            end
-
-            refreshBtn.MouseButton1Click:Connect(buildPartPicker)
-            allBtn.MouseButton1Click:Connect(function()
-                for part in pairs(selParts) do
-                    selParts[part] = true; partBtns[part].BackgroundColor3 = ACCENT
-                end
-            end)
-            noneBtn.MouseButton1Click:Connect(function()
-                for part in pairs(selParts) do
-                    selParts[part] = false; partBtns[part].BackgroundColor3 = BGSUB
-                end
+        end
+        do
+            local r = bcRow(34)
+            bcLbl(r, 'Select individual parts:', 8, 5, 156, 20)
+            bcBtn(r, 'Part Picker', 168, 4, 90, 22).MouseButton1Click:Connect(function()
+                if partPickerGui then partPickerGui.Enabled = not partPickerGui.Enabled end
             end)
         end
     end
@@ -3645,7 +3545,7 @@ do
     do
         bcSecHdr('SURFACE')
         do
-            local r = bcRow(30); bcLbl(r,'Transparency:',8,5,90,20)
+            local r = bcRow(34); bcLbl(r,'Transparency:',8,5,90,20)
             local inp = bcInp(r,'0',100,4,54,22)
             bcBtn(r,'Apply',160,4,70,22).MouseButton1Click:Connect(function()
                 local v = math.clamp(tonumber(inp.Text)or 0,0,0.99)
@@ -3653,7 +3553,7 @@ do
             end)
         end
         do
-            local r = bcRow(30); bcLbl(r,'Reflectance:',8,5,84,20)
+            local r = bcRow(34); bcLbl(r,'Reflectance:',8,5,84,20)
             local inp = bcInp(r,'0',94,4,54,22)
             bcBtn(r,'Apply',154,4,70,22).MouseButton1Click:Connect(function()
                 local v = math.clamp(tonumber(inp.Text)or 0,0,1)
@@ -3661,7 +3561,7 @@ do
             end)
         end
         do
-            local r = bcRow(30); bcLbl(r,'Cast Shadow:',8,5,82,20)
+            local r = bcRow(34); bcLbl(r,'Cast Shadow:',8,5,82,20)
             togBtns.shad = bcTog(r,92,4); bcTogOn(togBtns.shad)
             togBtns.shad.MouseButton1Click:Connect(function()
                 togState.shad = not togState.shad
@@ -3676,7 +3576,7 @@ do
     -- ================================================================
     do
         bcSecHdr('SIZE SCALE')
-        local r = bcRow(30); bcLbl(r,'Multiplier:',8,5,74,20)
+        local r = bcRow(34); bcLbl(r,'Multiplier:',8,5,74,20)
         local inp = bcInp(r,'1.0',84,4,58,22)
         bcBtn(r,'Apply Scale',148,4,96,22).MouseButton1Click:Connect(function()
             local mult = tonumber(inp.Text) or 1.0
@@ -3704,14 +3604,14 @@ do
     -- ================================================================
     bcSecHdr('LIGHTING')
     do -- headlight
-        local r0 = bcRow(26); bcLbl(r0,'Headlight Color  R:',8,3,128,20)
+        local r0 = bcRow(30); bcLbl(r0,'Headlight Color  R:',8,3,128,20)
         local hlR = bcInp(r0,'255',138,2,44,22); bcLbl(r0,'G:',186,3,14,20)
         local hlG = bcInp(r0,'255',202,2,44,22); bcLbl(r0,'B:',250,3,14,20)
         local hlB = bcInp(r0,'255',266,2,44,22)
-        local r1 = bcRow(30); bcLbl(r1,'Brightness:',8,5,74,20)
+        local r1 = bcRow(34); bcLbl(r1,'Brightness:',8,5,74,20)
         local hlBr = bcInp(r1,'5',84,4,44,22); bcLbl(r1,'Range:',132,5,44,20)
         local hlRg = bcInp(r1,'40',178,4,44,22)
-        local r2 = bcRow(30); bcLbl(r2,'Headlight:',8,5,68,20)
+        local r2 = bcRow(34); bcLbl(r2,'Headlight:',8,5,68,20)
         togBtns.hl = bcTog(r2,78,4)
         togBtns.hl.MouseButton1Click:Connect(function()
             togState.hl = not togState.hl
@@ -3735,11 +3635,11 @@ do
         end)
     end
     do -- spotlights
-        local r0 = bcRow(30); bcLbl(r0,'Spotlight Br:',8,5,84,20)
+        local r0 = bcRow(34); bcLbl(r0,'Spotlight Br:',8,5,84,20)
         local spBr = bcInp(r0,'3',94,4,40,22); bcLbl(r0,'Rng:',138,5,32,20)
         local spRg = bcInp(r0,'20',172,4,40,22); bcLbl(r0,'Ang:',216,5,32,20)
         local spAng = bcInp(r0,'90',250,4,40,22)
-        local r1 = bcRow(30); bcLbl(r1,'Spotlights:',8,5,74,20)
+        local r1 = bcRow(34); bcLbl(r1,'Spotlights:',8,5,74,20)
         togBtns.sp = bcTog(r1,84,4)
         togBtns.sp.MouseButton1Click:Connect(function()
             togState.sp = not togState.sp
@@ -3775,7 +3675,7 @@ do
         end)
     end
     do -- neon glow
-        local r = bcRow(30); bcLbl(r,'Neon Glow (all):',8,5,110,20)
+        local r = bcRow(34); bcLbl(r,'Neon Glow (all):',8,5,110,20)
         togBtns.ng = bcTog(r,120,4)
         togBtns.ng.MouseButton1Click:Connect(function()
             togState.ng = not togState.ng
@@ -3788,194 +3688,12 @@ do
     end
 
     -- ================================================================
-    -- PARTICLES & EFFECTS
-    -- ================================================================
-    bcSecHdr('PARTICLES & EFFECTS')
-    do -- smoke
-        local r0 = bcRow(26); bcLbl(r0,'Smoke Color  R:',8,3,108,20)
-        local smkR = bcInp(r0,'128',118,2,44,22); bcLbl(r0,'G:',166,3,14,20)
-        local smkG = bcInp(r0,'128',182,2,44,22); bcLbl(r0,'B:',230,3,14,20)
-        local smkB = bcInp(r0,'128',246,2,44,22)
-        local r1 = bcRow(30); bcLbl(r1,'Size:',8,5,38,20)
-        local smkSz = bcInp(r1,'1',48,4,44,22); bcLbl(r1,'Opacity:',96,5,56,20)
-        local smkOp = bcInp(r1,'0.5',154,4,50,22)
-        local r2 = bcRow(30); bcLbl(r2,'Smoke:',8,5,50,20)
-        togBtns.smk = bcTog(r2,60,4)
-        togBtns.smk.MouseButton1Click:Connect(function()
-            togState.smk = not togState.smk
-            if togState.smk then
-                bcTogOn(togBtns.smk)
-                local root = getBikeRoot()
-                if root then
-                    if effInst.smoke then effInst.smoke:Destroy() end
-                    -- find exhaust/muffler/pipe by name; fall back to rearmost part
-                    local smkParent = root
-                    local model = getTargetModel()
-                    if model then
-                        local back = -root.CFrame.LookVector
-                        local bestDot, bestPart = -math.huge, nil
-                        for _, p in ipairs(model:GetDescendants()) do
-                            if p:IsA('BasePart') then
-                                local n = p.Name:lower()
-                                if n:find('exhaust') or n:find('muffler') or n:find('pipe') or n:find('tail') then
-                                    bestPart = p; break
-                                end
-                                local d = (p.Position - root.Position).Unit:Dot(back)
-                                if d > bestDot then bestDot = d; bestPart = p end
-                            end
-                        end
-                        if bestPart then smkParent = bestPart end
-                    end
-                    local sm = Instance.new('Smoke')
-                    sm.Color=Color3.fromRGB(math.clamp(tonumber(smkR.Text)or 128,0,255),math.clamp(tonumber(smkG.Text)or 128,0,255),math.clamp(tonumber(smkB.Text)or 128,0,255))
-                    sm.Size=math.clamp(tonumber(smkSz.Text)or 1,0.1,10)
-                    sm.Opacity=math.clamp(tonumber(smkOp.Text)or 0.5,0,1)
-                    sm.RiseVelocity=3; sm.Parent=smkParent; effInst.smoke=sm
-                end
-            else
-                bcTogOff(togBtns.smk)
-                if effInst.smoke then effInst.smoke:Destroy(); effInst.smoke=nil end
-            end
-        end)
-    end
-    do -- fire
-        local r0 = bcRow(30); bcLbl(r0,'Fire Size:',8,5,60,20)
-        local fireSz = bcInp(r0,'5',70,4,44,22); bcLbl(r0,'Heat:',118,5,40,20)
-        local fireHt = bcInp(r0,'9',160,4,44,22)
-        local r1 = bcRow(30); bcLbl(r1,'Fire:',8,5,36,20)
-        togBtns.fire = bcTog(r1,46,4)
-        togBtns.fire.MouseButton1Click:Connect(function()
-            togState.fire = not togState.fire
-            if togState.fire then
-                bcTogOn(togBtns.fire)
-                local root = getBikeRoot()
-                if root then
-                    if effInst.fire then effInst.fire:Destroy() end
-                    local fi = Instance.new('Fire')
-                    fi.Size=math.clamp(tonumber(fireSz.Text)or 5,1,30)
-                    fi.Heat=math.clamp(tonumber(fireHt.Text)or 9,0,25)
-                    fi.Parent=root; effInst.fire=fi
-                end
-            else
-                bcTogOff(togBtns.fire)
-                if effInst.fire then effInst.fire:Destroy(); effInst.fire=nil end
-            end
-        end)
-    end
-    do -- sparkles
-        local r = bcRow(30); bcLbl(r,'Sparkles:',8,5,62,20)
-        togBtns.spk = bcTog(r,72,4)
-        togBtns.spk.MouseButton1Click:Connect(function()
-            togState.spk = not togState.spk
-            if togState.spk then
-                bcTogOn(togBtns.spk)
-                local root = getBikeRoot()
-                if root then
-                    if effInst.sparkle then effInst.sparkle:Destroy() end
-                    local sp = Instance.new('Sparkles'); sp.Parent=root; effInst.sparkle=sp
-                end
-            else
-                bcTogOff(togBtns.spk)
-                if effInst.sparkle then effInst.sparkle:Destroy(); effInst.sparkle=nil end
-            end
-        end)
-    end
-    do -- forcefield
-        local r = bcRow(30); bcLbl(r,'ForceField (char):',8,5,122,20)
-        togBtns.ff = bcTog(r,132,4)
-        togBtns.ff.MouseButton1Click:Connect(function()
-            togState.ff = not togState.ff
-            if togState.ff then
-                bcTogOn(togBtns.ff)
-                local char = plr.Character
-                if char then
-                    if effInst.ff then effInst.ff:Destroy() end
-                    local f = Instance.new('ForceField'); f.Visible=true; f.Parent=char; effInst.ff=f
-                end
-            else
-                bcTogOff(togBtns.ff)
-                if effInst.ff then effInst.ff:Destroy(); effInst.ff=nil end
-            end
-        end)
-    end
-
-    -- ================================================================
-    -- ENGINE SOUND
-    -- ================================================================
-    do
-        bcSecHdr('ENGINE SOUND')
-        local r0 = bcRow(30); bcLbl(r0,'SoundId:',8,5,58,20)
-        local sndId = bcInp(r0,'rbxassetid://0',68,4,300,22)
-        local r1 = bcRow(30); bcLbl(r1,'Volume:',8,5,52,20)
-        local sndVol = bcInp(r1,'1.0',62,4,50,22); bcLbl(r1,'Speed:',116,5,44,20)
-        local sndSp  = bcInp(r1,'1.0',162,4,50,22)
-        local r2 = bcRow(30); bcLbl(r2,'Loop:',8,5,40,20)
-        togBtns.sndLoop = bcTog(r2,50,4)
-        togBtns.sndLoop.MouseButton1Click:Connect(function()
-            togState.sndLoop = not togState.sndLoop
-            if togState.sndLoop then bcTogOn(togBtns.sndLoop) else bcTogOff(togBtns.sndLoop) end
-        end)
-        local r3 = bcRow(30)
-        local applyBtn = bcBtn(r3,'Apply Sound',8,4,100,22)
-        local stopBtn  = bcBtn(r3,'Stop Sound',114,4,90,22)
-        applyBtn.MouseButton1Click:Connect(function()
-            local root = getBikeRoot()
-            if not root then showToast('Not on a bike'); return end
-            if effInst.snd then effInst.snd:Destroy() end
-            local s = Instance.new('Sound')
-            s.SoundId=sndId.Text
-            s.Volume=math.clamp(tonumber(sndVol.Text)or 1,0,10)
-            s.PlaybackSpeed=math.clamp(tonumber(sndSp.Text)or 1,0,5)
-            s.Looped=togState.sndLoop; s.Parent=root; s:Play(); effInst.snd=s
-            showToast('Sound playing')
-        end)
-        stopBtn.MouseButton1Click:Connect(function()
-            if effInst.snd then effInst.snd:Stop(); effInst.snd:Destroy(); effInst.snd=nil end
-            showToast('Sound stopped')
-        end)
-    end
-
-    -- ================================================================
-    -- DECALS
-    -- ================================================================
-    do
-        bcSecHdr('DECALS')
-        local r0 = bcRow(30); bcLbl(r0,'TextureId:',8,5,66,20)
-        local dclId = bcInp(r0,'rbxassetid://0',76,4,300,22)
-        local r1 = bcRow(30)
-        local applyBtn  = bcBtn(r1,'Apply Decals',8,4,100,22)
-        local removeBtn = bcBtn(r1,'Remove Decals',114,4,110,22)
-        applyBtn.MouseButton1Click:Connect(function()
-            local texId = dclId.Text
-            if texId=='' or texId=='rbxassetid://0' then showToast('Enter a valid TextureId'); return end
-            local model = getTargetModel()
-            if not model then showToast('Not on a bike'); return end
-            for _, p in ipairs(model:GetDescendants()) do
-                if p:IsA('BasePart') then
-                    for _, face in ipairs(Enum.NormalId:GetEnumItems()) do
-                        local d = Instance.new('Decal'); d.Texture=texId; d.Face=face; d.Parent=p
-                    end
-                end
-            end
-            showToast('Decals applied')
-        end)
-        removeBtn.MouseButton1Click:Connect(function()
-            local model = getTargetModel()
-            if not model then showToast('Not on a bike'); return end
-            for _, d in ipairs(model:GetDescendants()) do
-                if d:IsA('Decal') or d:IsA('Texture') then d:Destroy() end
-            end
-            showToast('Decals removed')
-        end)
-    end
-
-    -- ================================================================
     -- RESET
     -- ================================================================
     do
         bcSecHdr('RESET')
-        local r = bcRow(36)
-        local rstBtn = bcBtn(r,'Reset All Appearance',8,6,200,24)
+        local r = bcRow(40)
+        local rstBtn = bcBtn(r,'Reset All Appearance',8,8,200,24)
         rstBtn.BackgroundColor3 = Color3.fromRGB(160,40,40)
         rstBtn.Font = Enum.Font.GothamBold
         rstBtn.MouseButton1Click:Connect(function()
@@ -3986,16 +3704,12 @@ do
             local model = getTargetModel()
             if model then
                 for _, d in ipairs(model:GetDescendants()) do
-                    if d:IsA('PointLight') or d:IsA('SpotLight') or d:IsA('SurfaceLight')
-                    or d:IsA('Smoke') or d:IsA('Fire') or d:IsA('Sparkles')
-                    or d:IsA('Sound') or d:IsA('Decal') or d:IsA('Texture') then
+                    if d:IsA('PointLight') or d:IsA('SpotLight') or d:IsA('SurfaceLight') then
                         pcall(function() d:Destroy() end)
                     end
                 end
             end
-            if effInst.ff then effInst.ff:Destroy(); effInst.ff=nil end
             effInst.headlight=nil; effInst.spotlights={}
-            effInst.smoke=nil; effInst.fire=nil; effInst.sparkle=nil; effInst.snd=nil
             for k in pairs(togState) do togState[k]=false end
             togState.shad=true
             for _, btn in pairs(togBtns) do pcall(bcTogOff,btn) end
@@ -4004,6 +3718,940 @@ do
             showToast('All appearance reset')
         end)
     end
+
+    -- ================================================================
+    -- CONFIGS
+    -- ================================================================
+    do
+        bcSecHdr('CONFIGS')
+
+        local cfgTable   = {}   -- { [name] = { [partName] = {...} } }
+        local cfgSelName = ''
+
+        -- row 1: name input + save + delete
+        local r0 = bcRow(34)
+        bcLbl(r0, 'Name:', 8, 6, 40, 22)
+        local cfgNameInp = bcInp(r0, 'My Config', 52, 6, 124, 22)
+        local cfgSaveBtn = bcBtn(r0, 'Save', 182, 6, 50, 22)
+        cfgSaveBtn.BackgroundColor3 = ACCENT
+        local cfgDelBtn  = bcBtn(r0, 'Delete', 236, 6, 54, 22)
+        cfgDelBtn.BackgroundColor3 = Color3.fromRGB(140, 40, 40)
+
+        -- row 2: dropdown + load button
+        local r1 = bcRow(34)
+
+        -- dropdown button (TextButton so the whole area is clickable)
+        local cfgDdBtn = Instance.new('TextButton')
+        cfgDdBtn.Size = UDim2.new(0, 174, 0, 22); cfgDdBtn.Position = UDim2.new(0, 8, 0, 6)
+        cfgDdBtn.BackgroundColor3 = BGSUB; cfgDdBtn.BorderSizePixel = 1; cfgDdBtn.BorderColor3 = BORDER
+        cfgDdBtn.Text = ''; cfgDdBtn.ZIndex = 12; cfgDdBtn.Parent = r1
+
+        local cfgDdLbl = Instance.new('TextLabel')
+        cfgDdLbl.Size = UDim2.new(1, -22, 1, 0); cfgDdLbl.Position = UDim2.new(0, 6, 0, 0)
+        cfgDdLbl.BackgroundTransparency = 1; cfgDdLbl.Text = 'No configs saved'
+        cfgDdLbl.TextColor3 = SUBTEXT; cfgDdLbl.Font = Enum.Font.Gotham; cfgDdLbl.TextSize = 11
+        cfgDdLbl.TextXAlignment = Enum.TextXAlignment.Left
+        cfgDdLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        cfgDdLbl.ZIndex = 13; cfgDdLbl.Parent = cfgDdBtn
+
+        local cfgDdArrow = Instance.new('TextLabel')
+        cfgDdArrow.Size = UDim2.new(0, 20, 1, 0); cfgDdArrow.Position = UDim2.new(1, -20, 0, 0)
+        cfgDdArrow.BackgroundTransparency = 1; cfgDdArrow.Text = '▼'
+        cfgDdArrow.TextColor3 = SUBTEXT; cfgDdArrow.Font = Enum.Font.Gotham; cfgDdArrow.TextSize = 10
+        cfgDdArrow.ZIndex = 13; cfgDdArrow.Parent = cfgDdBtn
+
+        local cfgLoadBtn = bcBtn(r1, 'Load', 188, 6, 52, 22)
+        cfgLoadBtn.BackgroundColor3 = ACCENT
+
+        -- dropdown popup (child of panel so it renders above the scroll frame)
+        local cfgPopup = Instance.new('Frame')
+        cfgPopup.BackgroundColor3 = BGSUB; cfgPopup.BorderSizePixel = 1; cfgPopup.BorderColor3 = BORDER
+        cfgPopup.Size = UDim2.new(0, 182, 0, 0); cfgPopup.ZIndex = 30
+        cfgPopup.Visible = false; cfgPopup.ClipsDescendants = true; cfgPopup.Parent = panel
+
+        local cfgPopupLayout = Instance.new('UIListLayout')
+        cfgPopupLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        cfgPopupLayout.Padding = UDim.new(0, 0); cfgPopupLayout.Parent = cfgPopup
+
+        local cfgPopupOpen = false
+        local ITEM_H = 22
+
+        local function cfgRebuildItems()
+            for _, c in ipairs(cfgPopup:GetChildren()) do
+                if c:IsA('TextButton') then c:Destroy() end
+            end
+            local names = {}
+            for n in pairs(cfgTable) do table.insert(names, n) end
+            table.sort(names)
+            for i, name in ipairs(names) do
+                local item = Instance.new('TextButton')
+                item.Size = UDim2.new(1, 0, 0, ITEM_H)
+                item.BackgroundColor3 = (name == cfgSelName) and ACCENT or BGSUB
+                item.BorderSizePixel = 0; item.LayoutOrder = i
+                item.Text = '  ' .. name; item.TextColor3 = TEXT
+                item.Font = Enum.Font.Gotham; item.TextSize = 11
+                item.TextXAlignment = Enum.TextXAlignment.Left
+                item.ZIndex = 31; item.Parent = cfgPopup
+                item.MouseEnter:Connect(function()
+                    if name ~= cfgSelName then item.BackgroundColor3 = BG2 end
+                end)
+                item.MouseLeave:Connect(function()
+                    item.BackgroundColor3 = (name == cfgSelName) and ACCENT or BGSUB
+                end)
+                item.MouseButton1Click:Connect(function()
+                    cfgSelName = name
+                    cfgDdLbl.Text = name; cfgDdLbl.TextColor3 = TEXT
+                    cfgPopup.Visible = false; cfgPopupOpen = false; cfgDdArrow.Text = '▼'
+                    -- refresh highlight
+                    for _, c2 in ipairs(cfgPopup:GetChildren()) do
+                        if c2:IsA('TextButton') then
+                            c2.BackgroundColor3 = (c2.Text:sub(3) == cfgSelName) and ACCENT or BGSUB
+                        end
+                    end
+                end)
+            end
+            return #names
+        end
+
+        local function cfgTogglePopup()
+            local names = {}; for n in pairs(cfgTable) do table.insert(names, n) end
+            if #names == 0 then return end
+            cfgPopupOpen = not cfgPopupOpen
+            cfgDdArrow.Text = cfgPopupOpen and '▲' or '▼'
+            if cfgPopupOpen then
+                cfgRebuildItems()
+                local popH = math.min(#names, 6) * ITEM_H
+                cfgPopup.Size = UDim2.new(0, 182, 0, popH)
+                -- position relative to panel using AbsolutePosition
+                local relY = cfgDdBtn.AbsolutePosition.Y - panel.AbsolutePosition.Y
+                local posY = relY - popH
+                if posY < 32 then posY = relY + 22 end
+                cfgPopup.Position = UDim2.new(0, 8, 0, posY)
+                cfgPopup.Visible = true
+            else
+                cfgPopup.Visible = false
+            end
+        end
+
+        cfgDdBtn.MouseButton1Click:Connect(cfgTogglePopup)
+
+        -- save
+        cfgSaveBtn.MouseButton1Click:Connect(function()
+            local name = cfgNameInp.Text
+            if name == '' then showToast('Enter a config name'); return end
+            local model = getTargetModel()
+            if not model then showToast('Not on a bike'); return end
+            local data = {}
+            for _, p in ipairs(model:GetDescendants()) do
+                if p:IsA('BasePart') then
+                    data[p.Name] = {
+                        Color        = p.Color,
+                        Material     = p.Material,
+                        Transparency = p.Transparency,
+                        Reflectance  = p.Reflectance,
+                        CastShadow   = p.CastShadow,
+                    }
+                end
+            end
+            cfgTable[name] = data
+            cfgSelName = name
+            cfgDdLbl.Text = name; cfgDdLbl.TextColor3 = TEXT
+            showToast('Saved "' .. name .. '"')
+        end)
+
+        -- delete
+        cfgDelBtn.MouseButton1Click:Connect(function()
+            if cfgSelName == '' then showToast('No config selected'); return end
+            local deleted = cfgSelName
+            cfgTable[cfgSelName] = nil; cfgSelName = ''
+            cfgDdLbl.Text = 'No configs saved'; cfgDdLbl.TextColor3 = SUBTEXT
+            cfgPopup.Visible = false; cfgPopupOpen = false; cfgDdArrow.Text = '▼'
+            showToast('Deleted "' .. deleted .. '"')
+        end)
+
+        -- load
+        cfgLoadBtn.MouseButton1Click:Connect(function()
+            if cfgSelName == '' then showToast('No config selected'); return end
+            local data = cfgTable[cfgSelName]
+            if not data then showToast('Config not found'); return end
+            local model = getTargetModel()
+            if not model then showToast('Not on a bike'); return end
+            local applied = 0
+            for _, p in ipairs(model:GetDescendants()) do
+                if p:IsA('BasePart') and data[p.Name] then
+                    local d = data[p.Name]
+                    pcall(function()
+                        p.Color        = d.Color
+                        p.Material     = d.Material
+                        p.Transparency = d.Transparency
+                        p.Reflectance  = d.Reflectance
+                        p.CastShadow   = d.CastShadow
+                    end)
+                    applied += 1
+                end
+            end
+            showToast('Loaded "' .. cfgSelName .. '" (' .. applied .. ' parts)')
+        end)
+    end
+end
+
+-- ============================================================
+-- PART PICKER WINDOW  (Dex-style tree explorer)
+-- ============================================================
+do
+    -- in-game SelectionBoxes; stored in-place so _G ref stays valid
+    local ppSelBoxes = {}
+    _G.PPSelBoxes    = ppSelBoxes
+
+    local pp = Instance.new('ScreenGui')
+    pp.Name           = 'PartPickerGui'
+    pp.ResetOnSpawn   = false
+    pp.DisplayOrder   = 996
+    pp.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    pp.Enabled        = false
+    pp.Parent         = CoreGui
+    partPickerGui     = pp
+
+    local ppanel = Instance.new('Frame')
+    ppanel.Size             = UDim2.new(0, 360, 0, 520)
+    ppanel.Position         = UDim2.new(0.5, 60, 0.5, -260)
+    ppanel.BackgroundColor3 = BG2
+    ppanel.BorderSizePixel  = 1
+    ppanel.BorderColor3     = BORDER
+    ppanel.Active           = true
+    ppanel.ZIndex           = 10
+    ppanel.Parent           = pp
+
+    do -- drag
+        local drag, dragStart, startPos = false, nil, nil
+        ppanel.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                drag = true; dragStart = inp.Position; startPos = ppanel.Position
+            end
+        end)
+        ppanel.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+        end)
+        UIS.InputChanged:Connect(function(inp)
+            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                local d = inp.Position - dragStart
+                ppanel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                            startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+    end
+
+    -- ---- title bar (32 px) ----
+    local ppTBar = Instance.new('Frame')
+    ppTBar.Size             = UDim2.new(1, 0, 0, 32)
+    ppTBar.BackgroundColor3 = BGSUB
+    ppTBar.BorderSizePixel  = 0
+    ppTBar.ZIndex           = 11
+    ppTBar.Parent           = ppanel
+
+    local ppCountLbl = Instance.new('TextLabel')
+    ppCountLbl.Size = UDim2.new(0, 90, 1, 0); ppCountLbl.Position = UDim2.new(1, -122, 0, 0)
+    ppCountLbl.BackgroundTransparency = 1; ppCountLbl.Text = '0 selected'
+    ppCountLbl.TextColor3 = SUBTEXT; ppCountLbl.Font = Enum.Font.Gotham; ppCountLbl.TextSize = 11
+    ppCountLbl.TextXAlignment = Enum.TextXAlignment.Right
+    ppCountLbl.ZIndex = 12; ppCountLbl.Parent = ppTBar
+
+    do
+        local tl = Instance.new('TextLabel')
+        tl.Size = UDim2.new(1, -130, 1, 0); tl.Position = UDim2.new(0, 10, 0, 0)
+        tl.BackgroundTransparency = 1; tl.Text = 'Part Picker'
+        tl.TextColor3 = TEXT; tl.Font = Enum.Font.GothamBold
+        tl.TextSize = 14; tl.TextXAlignment = Enum.TextXAlignment.Left
+        tl.ZIndex = 12; tl.Parent = ppTBar
+
+        local xb = Instance.new('TextButton')
+        xb.Size = UDim2.new(0, 32, 0, 32); xb.Position = UDim2.new(1, -32, 0, 0)
+        xb.BackgroundColor3 = Color3.fromRGB(180, 50, 50); xb.BorderSizePixel = 0
+        xb.Text = 'X'; xb.TextColor3 = TEXT; xb.Font = Enum.Font.GothamBold
+        xb.TextSize = 13; xb.ZIndex = 12; xb.Parent = ppTBar
+        xb.MouseButton1Click:Connect(function()
+            -- clear outlines when window is closed
+            for k, sb in pairs(ppSelBoxes) do
+                pcall(function() sb:Destroy() end); ppSelBoxes[k] = nil
+            end
+            pp.Enabled = false
+        end)
+    end
+
+    -- ---- toolbar (30 px) ----
+    local ppCtrl = Instance.new('Frame')
+    ppCtrl.Size             = UDim2.new(1, 0, 0, 30)
+    ppCtrl.Position         = UDim2.new(0, 0, 0, 32)
+    ppCtrl.BackgroundColor3 = BGSUB
+    ppCtrl.BorderSizePixel  = 0
+    ppCtrl.ZIndex           = 11
+    ppCtrl.Parent           = ppanel
+
+    do -- separator line under toolbar
+        local ln = Instance.new('Frame')
+        ln.Size = UDim2.new(1, 0, 0, 1); ln.Position = UDim2.new(0, 0, 1, -1)
+        ln.BackgroundColor3 = BORDER; ln.BorderSizePixel = 0; ln.ZIndex = 12; ln.Parent = ppCtrl
+    end
+
+    local function ppToolBtn(text, x, w)
+        local b = Instance.new('TextButton')
+        b.Size = UDim2.new(0, w, 0, 22); b.Position = UDim2.new(0, x, 0, 4)
+        b.BackgroundColor3 = BGSUB; b.BorderSizePixel = 1; b.BorderColor3 = BORDER
+        b.Text = text; b.TextColor3 = TEXT; b.Font = Enum.Font.Gotham; b.TextSize = 11
+        b.ZIndex = 12; b.Parent = ppCtrl
+        return b
+    end
+    local ppRefreshBtn    = ppToolBtn('↻ Refresh',    4,  82)
+    local ppExpandBtn     = ppToolBtn('Expand All',   90,  78)
+    local ppCollapseBtn   = ppToolBtn('Collapse All', 172,  88)
+    local ppDeselectBtn   = ppToolBtn('Deselect All', 264,  88)
+
+    -- ---- color picker state ----
+    local ppPickedColor = Color3.fromRGB(255, 80, 80)
+    local ppCPOpen      = false
+
+    -- ---- bottom bar: color swatch + hex + Apply (46 px, anchored to bottom) ----
+    local ppBot = Instance.new('Frame')
+    ppBot.Size             = UDim2.new(1, 0, 0, 46)
+    ppBot.Position         = UDim2.new(0, 0, 1, -46)
+    ppBot.BackgroundColor3 = BGSUB
+    ppBot.BorderSizePixel  = 0
+    ppBot.ZIndex           = 11
+    ppBot.Parent           = ppanel
+
+    do -- top border
+        local ln = Instance.new('Frame')
+        ln.Size = UDim2.new(1, 0, 0, 1); ln.BackgroundColor3 = BORDER
+        ln.BorderSizePixel = 0; ln.ZIndex = 12; ln.Parent = ppBot
+    end
+
+    -- color swatch (click to open/close color picker)
+    local ppSwatch = Instance.new('TextButton')
+    ppSwatch.Size = UDim2.new(0, 28, 0, 28); ppSwatch.Position = UDim2.new(0, 8, 0, 9)
+    ppSwatch.BackgroundColor3 = ppPickedColor; ppSwatch.BorderSizePixel = 1
+    ppSwatch.BorderColor3 = BORDER; ppSwatch.Text = ''
+    ppSwatch.ZIndex = 12; ppSwatch.Parent = ppBot
+
+    -- hex readout / quick input
+    local ppHexBox = Instance.new('TextBox')
+    ppHexBox.Size = UDim2.new(0, 68, 0, 22); ppHexBox.Position = UDim2.new(0, 42, 0, 12)
+    ppHexBox.BackgroundColor3 = BG2; ppHexBox.BorderSizePixel = 1; ppHexBox.BorderColor3 = BORDER
+    ppHexBox.Text = 'FF5050'; ppHexBox.TextColor3 = TEXT; ppHexBox.Font = Enum.Font.Code
+    ppHexBox.TextSize = 11; ppHexBox.ClearTextOnFocus = false
+    ppHexBox.ZIndex = 12; ppHexBox.Parent = ppBot
+
+    -- hide / unhide selection
+    local ppHideBtn = Instance.new('TextButton')
+    ppHideBtn.Size = UDim2.new(0, 40, 0, 28); ppHideBtn.Position = UDim2.new(0, 114, 0, 9)
+    ppHideBtn.BackgroundColor3 = BGSUB; ppHideBtn.BorderSizePixel = 1; ppHideBtn.BorderColor3 = BORDER
+    ppHideBtn.Text = 'Hide'; ppHideBtn.TextColor3 = TEXT
+    ppHideBtn.Font = Enum.Font.Gotham; ppHideBtn.TextSize = 11
+    ppHideBtn.ZIndex = 12; ppHideBtn.Parent = ppBot
+
+    local ppUnhideBtn = Instance.new('TextButton')
+    ppUnhideBtn.Size = UDim2.new(0, 44, 0, 28); ppUnhideBtn.Position = UDim2.new(0, 158, 0, 9)
+    ppUnhideBtn.BackgroundColor3 = BGSUB; ppUnhideBtn.BorderSizePixel = 1; ppUnhideBtn.BorderColor3 = BORDER
+    ppUnhideBtn.Text = 'Unhide'; ppUnhideBtn.TextColor3 = TEXT
+    ppUnhideBtn.Font = Enum.Font.Gotham; ppUnhideBtn.TextSize = 11
+    ppUnhideBtn.ZIndex = 12; ppUnhideBtn.Parent = ppBot
+
+    local ppApplyBtn = Instance.new('TextButton')
+    ppApplyBtn.Size = UDim2.new(0, 148, 0, 30); ppApplyBtn.Position = UDim2.new(1, -156, 0, 8)
+    ppApplyBtn.BackgroundColor3 = ACCENT; ppApplyBtn.BorderSizePixel = 0
+    ppApplyBtn.Text = 'Apply to Selected'; ppApplyBtn.TextColor3 = TEXT
+    ppApplyBtn.Font = Enum.Font.GothamBold; ppApplyBtn.TextSize = 12
+    ppApplyBtn.ZIndex = 12; ppApplyBtn.Parent = ppBot
+
+    -- ---- tree scroll area ----
+    -- layout: 32 (title) + 30 (toolbar) + 1 (line) = 63 top offset; 46 bottom
+    local ppScroll = Instance.new('ScrollingFrame')
+    ppScroll.Size                  = UDim2.new(1, 0, 1, -(32 + 31 + 46))
+    ppScroll.Position              = UDim2.new(0, 0, 0, 32 + 31)
+    ppScroll.BackgroundColor3      = BG2
+    ppScroll.BackgroundTransparency = 0
+    ppScroll.BorderSizePixel       = 0
+    ppScroll.ScrollBarThickness    = 5
+    ppScroll.ScrollBarImageColor3  = BORDER
+    ppScroll.CanvasSize            = UDim2.new(0, 0, 0, 0)
+    ppScroll.AutomaticCanvasSize   = Enum.AutomaticSize.Y
+    ppScroll.ZIndex                = 11
+    ppScroll.Parent                = ppanel
+
+    local ppLayout = Instance.new('UIListLayout')
+    ppLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    ppLayout.Padding   = UDim.new(0, 0)
+    ppLayout.Parent    = ppScroll
+
+    -- ---- tree state ----
+    local ppNodeList = {}
+    local ppSelCount = 0
+
+    local function ppUpdateCount()
+        ppCountLbl.Text = ppSelCount .. ' selected'
+    end
+
+    -- recompute row visibility in a single forward pass (parent-before-children order)
+    local function ppRecomputeVis()
+        for _, n in ipairs(ppNodeList) do
+            if n.parentNode == nil then
+                n.row.Visible = true
+            else
+                n.row.Visible = n.parentNode.row.Visible and n.parentNode.expanded
+            end
+        end
+    end
+
+    local function ppCtrlDown()
+        return UIS:IsKeyDown(Enum.KeyCode.LeftControl)
+            or UIS:IsKeyDown(Enum.KeyCode.RightControl)
+    end
+
+    -- deselect every node and clear all in-game outlines
+    local function ppDeselectAll()
+        for _, nd in ipairs(ppNodeList) do
+            if nd.selected then
+                nd.selected = false
+                nd.row.BackgroundTransparency = 1
+            end
+        end
+        for k, sb in pairs(ppSelBoxes) do
+            pcall(function() sb:Destroy() end); ppSelBoxes[k] = nil
+        end
+        ppSelCount = 0
+        ppUpdateCount()
+    end
+
+    -- select/deselect a node and manage its in-game SelectionBox
+    local function ppSetSel(n, on)
+        if n.selected == on then return end
+        n.selected = on
+        if on then
+            n.row.BackgroundColor3    = Color3.fromRGB(0, 100, 200)
+            n.row.BackgroundTransparency = 0.55
+            ppSelCount += 1
+            local sb = Instance.new('SelectionBox')
+            sb.Adornee             = n.instance
+            sb.Color3              = Color3.fromRGB(0, 160, 255)
+            sb.LineThickness       = 0.06
+            sb.SurfaceColor3       = Color3.fromRGB(0, 160, 255)
+            sb.SurfaceTransparency = 0.82
+            sb.Parent              = workspace
+            ppSelBoxes[n.instance] = sb
+        else
+            n.row.BackgroundTransparency = 1
+            ppSelCount -= 1
+            if ppSelBoxes[n.instance] then
+                pcall(function() ppSelBoxes[n.instance]:Destroy() end)
+                ppSelBoxes[n.instance] = nil
+            end
+        end
+        ppUpdateCount()
+    end
+
+    -- forward declaration for recursion
+    local ppAddNode
+
+    ppAddNode = function(inst, depth, parentNode)
+        -- collect child instances worth showing in the tree
+        local childInsts = {}
+        for _, child in ipairs(inst:GetChildren()) do
+            if child:IsA('BasePart') or child:IsA('Model') or child:IsA('Folder') then
+                table.insert(childInsts, child)
+            end
+        end
+
+        local n = {
+            instance    = inst,
+            depth       = depth,
+            expanded    = (depth == 0),   -- root starts expanded
+            selected    = false,
+            isSelectable = inst:IsA('BasePart'),
+            hasChildren  = #childInsts > 0,
+            parentNode   = parentNode,
+            childNodes   = {},
+            row          = nil,
+            arrow        = nil,
+        }
+        table.insert(ppNodeList, n)
+
+        -- build the row Frame
+        local row = Instance.new('Frame')
+        row.Size                 = UDim2.new(1, 0, 0, 24)
+        row.BackgroundColor3     = BG2
+        row.BackgroundTransparency = 1
+        row.BorderSizePixel      = 0
+        row.LayoutOrder          = #ppNodeList
+        row.Visible              = false   -- ppRecomputeVis sets this after tree build
+        row.ZIndex               = 12
+        row.Parent               = ppScroll
+        n.row = row
+
+        local indent = depth * 14
+
+        -- expand/collapse arrow
+        if n.hasChildren then
+            local arr = Instance.new('TextButton')
+            arr.Size = UDim2.new(0, 16, 0, 16); arr.Position = UDim2.new(0, indent + 2, 0.5, -8)
+            arr.BackgroundTransparency = 1
+            arr.Text = n.expanded and '▼' or '▶'
+            arr.TextColor3 = SUBTEXT; arr.Font = Enum.Font.Gotham; arr.TextSize = 10
+            arr.ZIndex = 14; arr.Parent = row
+            n.arrow = arr
+            arr.MouseButton1Click:Connect(function()
+                n.expanded = not n.expanded
+                arr.Text = n.expanded and '▼' or '▶'
+                ppRecomputeVis()
+            end)
+        end
+
+        -- colored type dot (green = BasePart, blue = container)
+        local dot = Instance.new('Frame')
+        dot.Size = UDim2.new(0, 7, 0, 7); dot.Position = UDim2.new(0, indent + 20, 0.5, -3)
+        dot.BackgroundColor3 = n.isSelectable
+            and Color3.fromRGB(80, 210, 110)
+            or  Color3.fromRGB(90, 140, 220)
+        dot.BorderSizePixel = 0; dot.ZIndex = 14; dot.Parent = row
+        local dotCorner = Instance.new('UICorner')
+        dotCorner.CornerRadius = UDim.new(1, 0); dotCorner.Parent = dot
+
+        -- class label (right side, small, greyed)
+        local classLbl = Instance.new('TextLabel')
+        classLbl.Size = UDim2.new(0, 70, 1, 0); classLbl.Position = UDim2.new(1, -72, 0, 0)
+        classLbl.BackgroundTransparency = 1; classLbl.Text = inst.ClassName
+        classLbl.TextColor3 = SUBTEXT; classLbl.Font = Enum.Font.Gotham; classLbl.TextSize = 9
+        classLbl.TextXAlignment = Enum.TextXAlignment.Right
+        classLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        classLbl.ZIndex = 13; classLbl.Parent = row
+
+        -- part name
+        local nameLbl = Instance.new('TextLabel')
+        nameLbl.Size = UDim2.new(1, -(indent + 30 + 72), 1, 0)
+        nameLbl.Position = UDim2.new(0, indent + 30, 0, 0)
+        nameLbl.BackgroundTransparency = 1; nameLbl.Text = inst.Name
+        nameLbl.TextColor3 = TEXT
+        nameLbl.Font = Enum.Font.Gotham; nameLbl.TextSize = 12
+        nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+        nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLbl.ZIndex = 13; nameLbl.Parent = row
+
+        -- click/hover overlay. ZIndex 13 < arrow ZIndex 14, so arrow area is
+        -- intercepted by the arrow button first; this fires for all other areas.
+        local hit = Instance.new('TextButton')
+        hit.Size = UDim2.new(1, 0, 1, 0); hit.BackgroundTransparency = 1
+        hit.Text = ''; hit.ZIndex = 13; hit.Parent = row
+
+        hit.MouseButton1Click:Connect(function()
+            if ppCtrlDown() then
+                -- Ctrl held: toggle this node in/out of selection
+                ppSetSel(n, not n.selected)
+            else
+                -- No Ctrl: select only this node
+                ppDeselectAll()
+                ppSetSel(n, true)
+            end
+        end)
+        hit.MouseEnter:Connect(function()
+            if not n.selected then
+                row.BackgroundColor3 = BGSUB; row.BackgroundTransparency = 0.4
+            end
+        end)
+        hit.MouseLeave:Connect(function()
+            if not n.selected then row.BackgroundTransparency = 1 end
+        end)
+
+        -- recurse into children (depth-first, so parent always before children in ppNodeList)
+        for _, child in ipairs(childInsts) do
+            table.insert(n.childNodes, ppAddNode(child, depth + 1, n))
+        end
+
+        return n
+    end
+
+    local function ppClearSelBoxes()
+        for k, sb in pairs(ppSelBoxes) do
+            pcall(function() sb:Destroy() end); ppSelBoxes[k] = nil
+        end
+        ppSelCount = 0
+        ppUpdateCount()
+    end
+
+    local function ppClearTree()
+        ppClearSelBoxes()
+        for _, n in ipairs(ppNodeList) do
+            if n.row then n.row:Destroy() end
+        end
+        ppNodeList = {}
+    end
+
+    -- walk up from the seated VehicleSeat until we hit a direct child of workspace
+    local function ppGetRootModel()
+        local char = plr.Character
+        local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+        if not hum or not hum.SeatPart then return nil end
+        local cur = hum.SeatPart
+        while cur.Parent and cur.Parent ~= workspace do
+            cur = cur.Parent
+        end
+        return cur:IsA('Model') and cur or nil
+    end
+
+    local function ppBuildTree()
+        ppClearTree()
+        local model = ppGetRootModel()
+        if not model then showToast('Not on a bike'); return end
+        ppAddNode(model, 0, nil)
+        ppRecomputeVis()
+        showToast('Tree: ' .. #ppNodeList .. ' nodes')
+    end
+
+    ppRefreshBtn.MouseButton1Click:Connect(ppBuildTree)
+
+    ppExpandBtn.MouseButton1Click:Connect(function()
+        for _, n in ipairs(ppNodeList) do
+            if n.hasChildren then
+                n.expanded = true
+                if n.arrow then n.arrow.Text = '▼' end
+            end
+        end
+        ppRecomputeVis()
+    end)
+
+    ppCollapseBtn.MouseButton1Click:Connect(function()
+        for _, n in ipairs(ppNodeList) do
+            -- collapse all except root (keep root open so tree stays visible)
+            if n.hasChildren and n.parentNode then
+                n.expanded = false
+                if n.arrow then n.arrow.Text = '▶' end
+            end
+        end
+        ppRecomputeVis()
+    end)
+
+    ppDeselectBtn.MouseButton1Click:Connect(ppDeselectAll)
+
+    -- ================================================================
+    -- COLOR PICKER POPUP
+    -- ================================================================
+    do
+        local cpGui = Instance.new('ScreenGui')
+        cpGui.Name           = 'PPColorPickerGui'
+        cpGui.ResetOnSpawn   = false
+        cpGui.DisplayOrder   = 999
+        cpGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        cpGui.Enabled        = false
+        cpGui.Parent         = CoreGui
+
+        local CP_W      = 220
+        local SV_MARGIN = 15
+        local SV_SIZE   = CP_W - SV_MARGIN * 2
+        local SV_Y      = 36
+        local HUE_Y     = SV_Y + SV_SIZE + 10
+        local PREV_Y    = HUE_Y + 14 + 10
+        local CP_H      = PREV_Y + 22 + 12
+
+        local cpPanel = Instance.new('Frame')
+        cpPanel.Size             = UDim2.new(0, CP_W, 0, CP_H)
+        cpPanel.Position         = UDim2.new(0.5, -CP_W - 40, 0.5, -CP_H / 2)
+        cpPanel.BackgroundColor3 = BG2
+        cpPanel.BorderSizePixel  = 1
+        cpPanel.BorderColor3     = BORDER
+        cpPanel.Active           = true
+        cpPanel.ZIndex           = 20
+        cpPanel.Parent           = cpGui
+
+        -- drag (title bar only)
+        local cpDrag, cpDragStart, cpDragOrigin = false, nil, nil
+
+        -- title bar
+        local cpTBar = Instance.new('Frame')
+        cpTBar.Size = UDim2.new(1, 0, 0, 26); cpTBar.BackgroundColor3 = BGSUB
+        cpTBar.BorderSizePixel = 0; cpTBar.ZIndex = 21; cpTBar.Parent = cpPanel
+
+        cpTBar.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                cpDrag = true; cpDragStart = inp.Position; cpDragOrigin = cpPanel.Position
+            end
+        end)
+        cpTBar.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then cpDrag = false end
+        end)
+
+        local cpTitle = Instance.new('TextLabel')
+        cpTitle.Size = UDim2.new(1, -28, 1, 0); cpTitle.Position = UDim2.new(0, 8, 0, 0)
+        cpTitle.BackgroundTransparency = 1; cpTitle.Text = 'Color Picker'
+        cpTitle.TextColor3 = TEXT; cpTitle.Font = Enum.Font.GothamBold; cpTitle.TextSize = 12
+        cpTitle.TextXAlignment = Enum.TextXAlignment.Left; cpTitle.ZIndex = 22; cpTitle.Parent = cpTBar
+
+        local cpXBtn = Instance.new('TextButton')
+        cpXBtn.Size = UDim2.new(0, 26, 0, 26); cpXBtn.Position = UDim2.new(1, -26, 0, 0)
+        cpXBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50); cpXBtn.BorderSizePixel = 0
+        cpXBtn.Text = 'X'; cpXBtn.TextColor3 = TEXT; cpXBtn.Font = Enum.Font.GothamBold
+        cpXBtn.TextSize = 11; cpXBtn.ZIndex = 22; cpXBtn.Parent = cpTBar
+        cpXBtn.MouseButton1Click:Connect(function()
+            cpGui.Enabled = false; ppCPOpen = false
+        end)
+
+        -- SV square (hue-colored background)
+        local svSq = Instance.new('Frame')
+        svSq.Size = UDim2.new(0, SV_SIZE, 0, SV_SIZE)
+        svSq.Position = UDim2.new(0, SV_MARGIN, 0, SV_Y)
+        svSq.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+        svSq.BorderSizePixel = 0; svSq.ZIndex = 21; svSq.Parent = cpPanel
+
+        -- saturation overlay: white left -> transparent right
+        local satOv = Instance.new('Frame')
+        satOv.Size = UDim2.new(1, 0, 1, 0); satOv.BackgroundColor3 = Color3.new(1, 1, 1)
+        satOv.BorderSizePixel = 0; satOv.ZIndex = 22; satOv.Parent = svSq
+        local satGrad = Instance.new('UIGradient')
+        satGrad.Transparency = NumberSequence.new{
+            NumberSequenceKeypoint.new(0, 0),
+            NumberSequenceKeypoint.new(1, 1)
+        }
+        satGrad.Rotation = 0; satGrad.Parent = satOv
+
+        -- value overlay: transparent top -> black bottom
+        local valOv = Instance.new('Frame')
+        valOv.Size = UDim2.new(1, 0, 1, 0); valOv.BackgroundColor3 = Color3.new(0, 0, 0)
+        valOv.BorderSizePixel = 0; valOv.ZIndex = 23; valOv.Parent = svSq
+        local valGrad = Instance.new('UIGradient')
+        valGrad.Transparency = NumberSequence.new{
+            NumberSequenceKeypoint.new(0, 1),
+            NumberSequenceKeypoint.new(1, 0)
+        }
+        valGrad.Rotation = 90; valGrad.Parent = valOv
+
+        -- hit area on SV square
+        local svHit = Instance.new('TextButton')
+        svHit.Size = UDim2.new(1, 0, 1, 0); svHit.BackgroundTransparency = 1
+        svHit.Text = ''; svHit.ZIndex = 24; svHit.Parent = svSq
+
+        -- SV crosshair (child of cpPanel to avoid ClipsDescendants clipping)
+        local svCur = Instance.new('Frame')
+        svCur.Size = UDim2.new(0, 10, 0, 10)
+        svCur.AnchorPoint = Vector2.new(0.5, 0.5)
+        svCur.BackgroundTransparency = 1; svCur.BorderSizePixel = 0
+        svCur.ZIndex = 25; svCur.Parent = cpPanel
+        do
+            local ch = Instance.new('Frame')
+            ch.Size = UDim2.new(1, 0, 0, 1); ch.Position = UDim2.new(0, 0, 0.5, 0)
+            ch.BackgroundColor3 = Color3.new(1, 1, 1); ch.BorderSizePixel = 0
+            ch.ZIndex = 26; ch.Parent = svCur
+            local cv = Instance.new('Frame')
+            cv.Size = UDim2.new(0, 1, 1, 0); cv.Position = UDim2.new(0.5, 0, 0, 0)
+            cv.BackgroundColor3 = Color3.new(1, 1, 1); cv.BorderSizePixel = 0
+            cv.ZIndex = 26; cv.Parent = svCur
+        end
+
+        -- hue strip
+        local hueStrip = Instance.new('Frame')
+        hueStrip.Size = UDim2.new(0, SV_SIZE, 0, 14)
+        hueStrip.Position = UDim2.new(0, SV_MARGIN, 0, HUE_Y)
+        hueStrip.BackgroundColor3 = Color3.new(1, 1, 1); hueStrip.BorderSizePixel = 0
+        hueStrip.ZIndex = 21; hueStrip.Parent = cpPanel
+        local hueGrad = Instance.new('UIGradient')
+        hueGrad.Color = ColorSequence.new{
+            ColorSequenceKeypoint.new(0,     Color3.fromHSV(0,     1, 1)),
+            ColorSequenceKeypoint.new(1/6,   Color3.fromHSV(1/6,   1, 1)),
+            ColorSequenceKeypoint.new(2/6,   Color3.fromHSV(2/6,   1, 1)),
+            ColorSequenceKeypoint.new(3/6,   Color3.fromHSV(3/6,   1, 1)),
+            ColorSequenceKeypoint.new(4/6,   Color3.fromHSV(4/6,   1, 1)),
+            ColorSequenceKeypoint.new(5/6,   Color3.fromHSV(5/6,   1, 1)),
+            ColorSequenceKeypoint.new(1,     Color3.fromHSV(1,     1, 1)),
+        }
+        hueGrad.Parent = hueStrip
+
+        local hueHit = Instance.new('TextButton')
+        hueHit.Size = UDim2.new(1, 0, 1, 0); hueHit.BackgroundTransparency = 1
+        hueHit.Text = ''; hueHit.ZIndex = 22; hueHit.Parent = hueStrip
+
+        -- hue cursor bar (child of cpPanel)
+        local hueCur = Instance.new('Frame')
+        hueCur.Size = UDim2.new(0, 4, 0, 18)
+        hueCur.AnchorPoint = Vector2.new(0.5, 0.5)
+        hueCur.BackgroundColor3 = Color3.new(1, 1, 1)
+        hueCur.BorderSizePixel = 1; hueCur.BorderColor3 = Color3.new(0, 0, 0)
+        hueCur.ZIndex = 22; hueCur.Parent = cpPanel
+
+        -- preview swatch
+        local cpPreview = Instance.new('Frame')
+        cpPreview.Size = UDim2.new(0, 26, 0, 22)
+        cpPreview.Position = UDim2.new(0, SV_MARGIN, 0, PREV_Y)
+        cpPreview.BackgroundColor3 = ppPickedColor; cpPreview.BorderSizePixel = 1
+        cpPreview.BorderColor3 = BORDER; cpPreview.ZIndex = 21; cpPreview.Parent = cpPanel
+
+        -- hex input inside picker
+        local cpHexIn = Instance.new('TextBox')
+        cpHexIn.Size = UDim2.new(0, 74, 0, 22)
+        cpHexIn.Position = UDim2.new(0, SV_MARGIN + 32, 0, PREV_Y)
+        cpHexIn.BackgroundColor3 = BGSUB; cpHexIn.BorderSizePixel = 1; cpHexIn.BorderColor3 = BORDER
+        cpHexIn.Text = 'FF5050'; cpHexIn.TextColor3 = TEXT; cpHexIn.Font = Enum.Font.Code
+        cpHexIn.TextSize = 11; cpHexIn.ClearTextOnFocus = false
+        cpHexIn.ZIndex = 22; cpHexIn.Parent = cpPanel
+
+        -- ---- HSV state ----
+        local cpH, cpS, cpV = 0, 1, 1   -- all 0-1
+
+        local function cpColorToHex(c)
+            return string.format('%02X%02X%02X',
+                math.floor(c.R * 255 + 0.5),
+                math.floor(c.G * 255 + 0.5),
+                math.floor(c.B * 255 + 0.5))
+        end
+
+        local function cpSyncUI()
+            local c = Color3.fromHSV(cpH, cpS, cpV)
+            svSq.BackgroundColor3 = Color3.fromHSV(cpH, 1, 1)
+            svCur.Position   = UDim2.new(0, SV_MARGIN + cpS * SV_SIZE,
+                                          0, SV_Y    + (1 - cpV) * SV_SIZE)
+            hueCur.Position  = UDim2.new(0, SV_MARGIN + cpH * SV_SIZE,
+                                          0, HUE_Y + 7)
+            cpPreview.BackgroundColor3 = c
+            local hex = cpColorToHex(c)
+            cpHexIn.Text  = hex
+            ppPickedColor = c
+            ppSwatch.BackgroundColor3 = c
+            ppHexBox.Text = hex
+        end
+
+        local function cpSetHSV(h, s, v)
+            cpH = math.clamp(h, 0, 1)
+            cpS = math.clamp(s, 0, 1)
+            cpV = math.clamp(v, 0, 1)
+            cpSyncUI()
+        end
+
+        -- initialise cursors to default red
+        cpSyncUI()
+
+        -- SV square interaction
+        local svDrag = false
+        local function svUpdate(pos)
+            local abs = svSq.AbsolutePosition
+            local sz  = svSq.AbsoluteSize
+            cpSetHSV(cpH,
+                math.clamp((pos.X - abs.X) / sz.X, 0, 1),
+                1 - math.clamp((pos.Y - abs.Y) / sz.Y, 0, 1))
+        end
+        svHit.MouseButton1Down:Connect(function()
+            svDrag = true; svUpdate(UIS:GetMouseLocation())
+        end)
+
+        -- hue strip interaction
+        local hueDrag = false
+        local function hueUpdate(pos)
+            local abs = hueStrip.AbsolutePosition
+            local sz  = hueStrip.AbsoluteSize
+            cpSetHSV(math.clamp((pos.X - abs.X) / sz.X, 0, 1), cpS, cpV)
+        end
+        hueHit.MouseButton1Down:Connect(function()
+            hueDrag = true; hueUpdate(UIS:GetMouseLocation())
+        end)
+
+        -- global mouse tracking (dragging outside frames)
+        UIS.InputChanged:Connect(function(inp)
+            if inp.UserInputType ~= Enum.UserInputType.MouseMovement then return end
+            if cpDrag then
+                local d = inp.Position - cpDragStart
+                cpPanel.Position = UDim2.new(cpDragOrigin.X.Scale, cpDragOrigin.X.Offset + d.X,
+                                             cpDragOrigin.Y.Scale, cpDragOrigin.Y.Offset + d.Y)
+            end
+            if svDrag  then svUpdate(inp.Position) end
+            if hueDrag then hueUpdate(inp.Position) end
+        end)
+        UIS.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                svDrag = false; hueDrag = false
+            end
+        end)
+
+        -- hex input in picker -> update HSV
+        cpHexIn.FocusLost:Connect(function()
+            local hex = cpHexIn.Text:match('^#?(%x%x%x%x%x%x)$')
+            if hex then
+                local r = tonumber(hex:sub(1,2), 16) / 255
+                local g = tonumber(hex:sub(3,4), 16) / 255
+                local b = tonumber(hex:sub(5,6), 16) / 255
+                local h, s, v = Color3.new(r, g, b):ToHSV()
+                cpSetHSV(h, s, v)
+            end
+        end)
+
+        -- hex input in bottom bar -> update HSV
+        ppHexBox.FocusLost:Connect(function()
+            local hex = ppHexBox.Text:match('^#?(%x%x%x%x%x%x)$')
+            if hex then
+                local r = tonumber(hex:sub(1,2), 16) / 255
+                local g = tonumber(hex:sub(3,4), 16) / 255
+                local b = tonumber(hex:sub(5,6), 16) / 255
+                local h, s, v = Color3.new(r, g, b):ToHSV()
+                cpSetHSV(h, s, v)
+            end
+        end)
+
+        -- swatch toggle
+        ppSwatch.MouseButton1Click:Connect(function()
+            ppCPOpen = not ppCPOpen
+            cpGui.Enabled = ppCPOpen
+        end)
+    end
+
+    ppApplyBtn.MouseButton1Click:Connect(function()
+        local c = ppPickedColor
+        local painted = {}
+        local function paintInst(inst)
+            if inst:IsA('BasePart') then
+                if not painted[inst] then
+                    pcall(function() inst.Color = c end)
+                    painted[inst] = true
+                end
+            else
+                for _, desc in ipairs(inst:GetDescendants()) do
+                    if desc:IsA('BasePart') and not painted[desc] then
+                        pcall(function() desc.Color = c end)
+                        painted[desc] = true
+                    end
+                end
+            end
+        end
+        local n = 0
+        for _, node in ipairs(ppNodeList) do
+            if node.selected then
+                paintInst(node.instance)
+                n += 1
+            end
+        end
+        if n == 0 then
+            showToast('No parts selected')
+        else
+            showToast('Color applied (' .. n .. ' node(s))')
+        end
+    end)
+
+    -- hide / unhide selected parts
+    local function ppVisApply(transparency)
+        local n = 0
+        for _, node in ipairs(ppNodeList) do
+            if node.selected then
+                if node.instance:IsA('BasePart') then
+                    pcall(function() node.instance.Transparency = transparency end)
+                else
+                    for _, desc in ipairs(node.instance:GetDescendants()) do
+                        if desc:IsA('BasePart') then
+                            pcall(function() desc.Transparency = transparency end)
+                        end
+                    end
+                end
+                n += 1
+            end
+        end
+        if n == 0 then showToast('No parts selected')
+        else showToast((transparency == 1 and 'Hidden' or 'Unhidden') .. ' (' .. n .. ' node(s))') end
+    end
+    ppHideBtn.MouseButton1Click:Connect(function()   ppVisApply(1) end)
+    ppUnhideBtn.MouseButton1Click:Connect(function() ppVisApply(0) end)
+
+    -- expose cleanup so SMCleanup can clear in-game outlines on reload
+    _G.PPCleanup = ppClearSelBoxes
 end
 
 -- ============================================================
@@ -4591,9 +5239,15 @@ _G.SMCleanup = function()
         _G.FrozenBikeParts = nil
     end
 
+    -- clear part picker in-game SelectionBoxes before destroying the GUI
+    pcall(function() if _G.PPCleanup then _G.PPCleanup(); _G.PPCleanup = nil end end)
+
     -- destroy ScreenGuis this script owns
     pcall(function() gui:Destroy() end)
     pcall(function() minimapGui:Destroy() end)
+    pcall(function() if trailGui      then trailGui:Destroy()      end end)
+    pcall(function() if bikeCustGui   then bikeCustGui:Destroy()   end end)
+    pcall(function() if partPickerGui then partPickerGui:Destroy() end end)
 
     -- destroy LinoriaLib window
     pcall(function() Library.ScreenGui:Destroy() end)
