@@ -1,2 +1,2 @@
-konstant = 2.0.0
-konstant_testing = 1.0.0
+konstant = 2.0.0 working
+konstant_testing = 1.0.0 working
