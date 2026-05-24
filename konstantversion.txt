@@ -1,4 +1,4 @@
 konstant = 2.0.0 working
-konstant_testing = 1.0.0 working
+konstant_testing = 1.2.5 working
 
 -- working for working, notworking for not working
