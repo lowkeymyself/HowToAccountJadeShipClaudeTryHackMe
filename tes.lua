@@ -186,6 +186,7 @@ if IS_SUPERMOTO then
     Left:AddDivider()
 end
 
+if IS_SUPERMOTO then
 Left:AddToggle('AntiAdmin', {
     Text = 'Anti-Admin',
     Default = false,
@@ -220,6 +221,7 @@ Left:AddToggle('AntiAdmin', {
         end
     end
 })
+end -- IS_SUPERMOTO (AntiAdmin)
 
 Left:AddToggle('Fullbright', {
     Text = 'Fullbright',
@@ -258,91 +260,7 @@ Left:AddToggle('MinimapToggle', {
     end
 })
 
-Left:AddDivider()
-
-Left:AddToggle('StreamOptimizer', {
-    Text = 'Stream Optimizer',
-    Default = false,
-    Callback = function(val)
-        if val then
-            local RS2 = game:GetService('RunService')
-
-            -- carpet-bomb the entire map with a dense grid.
-            -- 200-stud step across ±4000 on X and Z = 41*41 = 1681 points.
-            -- fired in batches of 10 per Heartbeat to avoid a single-frame spike.
-            -- forces the streaming engine to load every chunk immediately
-            -- instead of waiting for the player to physically approach each area.
-            local GRID_MIN  = -4000
-            local GRID_MAX  =  4000
-            local GRID_STEP =  200
-            local BATCH     =  10   -- requests per frame
-
-            local points = {}
-            local Y = 50  -- mid-height so request covers both terrain and buildings
-            for x = GRID_MIN, GRID_MAX, GRID_STEP do
-                for z = GRID_MIN, GRID_MAX, GRID_STEP do
-                    table.insert(points, Vector3.new(x, Y, z))
-                end
-            end
-
-            -- shuffle so loading fans out across the map evenly
-            for i = #points, 2, -1 do
-                local j = math.random(i)
-                points[i], points[j] = points[j], points[i]
-            end
-
-            local idx          = 0
-            local lastPct      = -1
-
-            showToast('Stream Optimizer ON — loading ' .. #points .. ' chunks...')
-
-            _G.OptimizerConn = RS2.Heartbeat:Connect(function()
-                if idx >= #points then
-                    -- all chunks done; light pulse to keep the player's current
-                    -- area resident in case they move to the edge of the map
-                    local c    = plr.Character
-                    local hrp2 = c and c:FindFirstChild('HumanoidRootPart')
-                    if hrp2 then
-                        pcall(function()
-                            workspace:RequestStreamAroundAsync(hrp2.Position, 3)
-                        end)
-                    end
-                    return
-                end
-
-                -- fire BATCH points this frame
-                local batchEnd = math.min(idx + BATCH, #points)
-                for i = idx + 1, batchEnd do
-                    local pos = points[i]
-                    task.spawn(function()
-                        pcall(function()
-                            workspace:RequestStreamAroundAsync(pos, 3)
-                        end)
-                    end)
-                end
-                idx = batchEnd
-
-                -- toast progress every 10% so you can see it working
-                local pct = math.floor(idx / #points * 10) * 10
-                if pct ~= lastPct then
-                    lastPct = pct
-                    if pct < 100 then
-                        showToast('Loading... ' .. pct .. '%')
-                    else
-                        showToast('Map fully loaded!')
-                    end
-                end
-            end)
-        else
-            if _G.OptimizerConn then
-                _G.OptimizerConn:Disconnect()
-                _G.OptimizerConn = nil
-            end
-            showToast('Stream Optimizer OFF')
-        end
-    end
-})
-
+if IS_SUPERMOTO then
 BikeLeft:AddToggle('AutoFixBike', {
     Text = 'Auto-fix Bike',
     Default = false,
@@ -511,6 +429,7 @@ BikeLeft:AddToggle('AutoFixBike', {
         end
     end
 })
+end -- IS_SUPERMOTO (AutoFixBike)
 
 BikeLeft:AddDivider()
 
