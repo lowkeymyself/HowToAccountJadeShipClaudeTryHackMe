@@ -116,6 +116,22 @@ local IS_SUPERMOTO = (BIKE_INFO.mode == 'supermoto')
 local IS_KONSTANT  = (BIKE_INFO.mode == 'supermoto' or BIKE_INFO.mode == 'none')
 local BRAND_TITLE  = IS_KONSTANT and 'Konstant' or 'Konstant Aero'
 
+-- universal seat detector: VehicleSeat covers most bike-style rigs,
+-- Seat covers cars / boats / planes that use the basic Seat class
+local function isVehicleSeat(s)
+    return s and (s:IsA('VehicleSeat') or s:IsA('Seat'))
+end
+
+-- user-facing terminology: "bike" on Konstant places, "vehicle" on Aero
+local VEHICLE_TERM     = IS_KONSTANT and 'bike'    or 'vehicle'
+local VEHICLE_TERM_CAP = IS_KONSTANT and 'Bike'    or 'Vehicle'
+
+-- trick terminology + key: bikes do wheelies/stoppies, planes do flips
+local WHEELIE_TERM     = IS_KONSTANT and 'Wheelie'  or 'Backflip'
+local STOPPIE_TERM     = IS_KONSTANT and 'Stoppie'  or 'Frontflip'
+local STOPPIE_KEY      = IS_KONSTANT and Enum.KeyCode.B or Enum.KeyCode.Comma
+local STOPPIE_KEY_LBL  = IS_KONSTANT and 'B' or ','
+
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
@@ -161,7 +177,7 @@ local Tabs = {
 }
 
 local Left     = Tabs.Main:AddLeftGroupbox('Visual')
-local BikeLeft = Tabs.Main:AddLeftGroupbox('Bikes')
+local BikeLeft = Tabs.Main:AddLeftGroupbox(VEHICLE_TERM_CAP .. 's')
 local Right    = Tabs.Main:AddRightGroupbox('Mods')
 
 -- money feature is supermoto-specific (uses PurchaseBike remote with the price exploit).
@@ -418,7 +434,7 @@ BikeLeft:AddToggle('AutoFixBike', {
                 local hum2 = char and char:FindFirstChildWhichIsA('Humanoid')
                 if hum2 and hum2.SeatPart then return end  -- skip while mounted
                 for _, obj in ipairs(workspace:GetDescendants()) do
-                    if obj:IsA('VehicleSeat') and not obj.Occupant then
+                    if isVehicleSeat(obj) and not obj.Occupant then
                         -- walk ancestors to find the *sCar model (seat may be nested)
                         local p = obj.Parent
                         while p and p ~= workspace do
@@ -515,11 +531,48 @@ BikeLeft:AddInput('AccelInput', {
 BikeLeft:AddToggle('GroundOnly', {
     Text = 'Ground-Only Physics',
     Default = false,
-    Tooltip = 'Speed, brake, and reverse only fire while the bike is touching ground.',
+    Tooltip = 'Speed, brake, and reverse only fire while the ' .. VEHICLE_TERM .. ' is touching ground.',
+})
+
+-- Airplane Mode: switches Speed + Brake from flat 2D math to full 3D nose-direction.
+-- OFF (default): old behavior — accelerate flat regardless of pitch (right for bikes/cars)
+-- ON:            accelerate along LookVector — pitch up to climb, pitch down to dive
+BikeLeft:AddToggle('AirplaneMode', {
+    Text = 'Airplane Mode',
+    Default = false,
+    Tooltip = 'Use full 3D nose direction so planes can climb. Leave OFF for bikes and cars.',
+})
+
+-- Sticky Vehicle: tires planted, still drivable. Downward velocity clamp when grounded.
+BikeLeft:AddToggle('StickyVehicle', {
+    Text = 'Sticky ' .. VEHICLE_TERM_CAP,
+    Default = false,
+    Tooltip = 'Glues the ' .. VEHICLE_TERM .. ' to the floor while you keep driving. Kills bounce / launches.',
+    Callback = function(val)
+        if val then
+            _G.StickyConn = RunService.Heartbeat:Connect(function()
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                local seat = hum and hum.SeatPart
+                if not isVehicleSeat(seat) then return end
+                -- only act on meaningful upward velocity; horizontal untouched.
+                -- weak reversal (0.4x) so the physics solver isn't overwhelmed at speed,
+                -- which is what was making wheels phase through the chassis on the old version.
+                local vel = seat.AssemblyLinearVelocity
+                if vel.Y > 3 then
+                    seat.AssemblyLinearVelocity = Vector3.new(vel.X, -vel.Y * 0.4, vel.Z)
+                end
+            end)
+            showToast('Sticky ' .. VEHICLE_TERM_CAP .. ' ON')
+        else
+            if _G.StickyConn then _G.StickyConn:Disconnect(); _G.StickyConn = nil end
+            showToast('Sticky ' .. VEHICLE_TERM_CAP .. ' OFF')
+        end
+    end
 })
 
 BikeLeft:AddButton({
-    Text = 'Unpatch Bike',
+    Text = 'Unpatch ' .. VEHICLE_TERM_CAP,
     Func = function()
         if _G.SpeedConn then
             _G.SpeedConn:Disconnect()
@@ -532,14 +585,14 @@ BikeLeft:AddButton({
 })
 
 BikeLeft:AddButton({
-    Text = 'Patch Bike',
+    Text = 'Patch ' .. VEHICLE_TERM_CAP,
     Func = function()
         local RS2  = game:GetService('RunService')
         local char = plr.Character
 
         local seat
         for _, v in pairs(workspace:GetDescendants()) do
-            if v:IsA('VehicleSeat') and v.Occupant
+            if isVehicleSeat(v) and v.Occupant
             and v.Occupant.Parent == char then
                 seat = v
                 break
@@ -547,7 +600,7 @@ BikeLeft:AddButton({
         end
 
         if not seat then
-            showToast('Get in a bike first')
+            showToast('Get in a ' .. VEHICLE_TERM .. ' first')
             return
         end
 
@@ -573,26 +626,37 @@ BikeLeft:AddButton({
             local char2 = plr.Character
             local hum2  = char2 and char2:FindFirstChildWhichIsA('Humanoid')
             local seat2 = hum2 and hum2.SeatPart
-            if not seat2 or not seat2:IsA('VehicleSeat') then return end
-            -- Ground-only gate
-            if Toggles.GroundOnly and Toggles.GroundOnly.Value then
+            if not isVehicleSeat(seat2) then return end
+            -- Ground-only gate (silently bypassed when Airplane Mode is on)
+            if Toggles.GroundOnly and Toggles.GroundOnly.Value
+               and not (Toggles.AirplaneMode and Toggles.AirplaneMode.Value) then
                 local rp = RaycastParams.new()
                 rp.FilterType = Enum.RaycastFilterType.Exclude
-                local char2 = plr.Character
                 rp.FilterDescendantsInstances = { root.Parent, char2 }
                 local hit = workspace:Raycast(root.Position, Vector3.new(0, -6, 0), rp)
                 if not hit then return end
             end
-            local vel     = root.AssemblyLinearVelocity
-            local flatVel = Vector3.new(vel.X, 0, vel.Z)
-            if flatVel.Magnitude < maxSpeed then
-                local fwd     = root.CFrame.LookVector
-                local flatFwd = Vector3.new(fwd.X, 0, fwd.Z).Unit
-                root.AssemblyLinearVelocity = Vector3.new(
-                    vel.X + flatFwd.X * dt * accel,
-                    vel.Y,
-                    vel.Z + flatFwd.Z * dt * accel
-                )
+            local vel = root.AssemblyLinearVelocity
+            -- Airplane Mode ON  → full 3D nose direction (climb/dive works)
+            -- Airplane Mode OFF → flat 2D (preserves Y; right for ground vehicles)
+            if Toggles.AirplaneMode and Toggles.AirplaneMode.Value then
+                if vel.Magnitude < maxSpeed then
+                    local fwd = root.CFrame.LookVector
+                    root.AssemblyLinearVelocity = vel + fwd * dt * accel
+                end
+            else
+                local flatVel = Vector3.new(vel.X, 0, vel.Z)
+                if flatVel.Magnitude < maxSpeed then
+                    local fwd     = root.CFrame.LookVector
+                    local flatFwd = Vector3.new(fwd.X, 0, fwd.Z)
+                    if flatFwd.Magnitude < 0.01 then return end
+                    flatFwd = flatFwd.Unit
+                    root.AssemblyLinearVelocity = Vector3.new(
+                        vel.X + flatFwd.X * dt * accel,
+                        vel.Y,
+                        vel.Z + flatFwd.Z * dt * accel
+                    )
+                end
             end
         end)
 
@@ -614,26 +678,26 @@ end
 local clonedBikes = {}
 
 BikeLeft:AddButton({
-    Text = 'Clone Bike',
+    Text = 'Clone ' .. VEHICLE_TERM_CAP,
     Func = function()
         local char = plr.Character
         local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
-        if not hum or not hum.SeatPart then showToast('Not on a bike'); return end
+        if not hum or not hum.SeatPart then showToast('Not on a ' .. VEHICLE_TERM); return end
         local model = hum.SeatPart.Parent
         local clone = model:Clone()
         clone:PivotTo(model:GetPivot() * CFrame.new((#clonedBikes + 1) * 10, 0, 0))
         clone.Parent = workspace
         table.insert(clonedBikes, clone)
-        showToast('Bike cloned (' .. #clonedBikes .. ' clones)')
+        showToast(VEHICLE_TERM_CAP .. ' cloned (' .. #clonedBikes .. ' clones)')
     end
 })
 
 BikeLeft:AddButton({
-    Text = 'Clear Cloned Bikes',
+    Text = 'Clear Cloned ' .. VEHICLE_TERM_CAP .. 's',
     Func = function()
         for _, b in ipairs(clonedBikes) do pcall(function() b:Destroy() end) end
         clonedBikes = {}
-        showToast('Cloned bikes cleared')
+        showToast('Cloned ' .. VEHICLE_TERM .. 's cleared')
     end
 })
 
@@ -697,7 +761,7 @@ BikeLeft:AddButton({
 
         local seat
         for _, v in pairs(workspace:GetDescendants()) do
-            if v:IsA('VehicleSeat') and v.Occupant
+            if isVehicleSeat(v) and v.Occupant
             and v.Occupant.Parent == char then
                 seat = v
                 break
@@ -705,7 +769,7 @@ BikeLeft:AddButton({
         end
 
         if not seat then
-            showToast('Get in a bike first')
+            showToast('Get in a ' .. VEHICLE_TERM .. ' first')
             return
         end
 
@@ -729,47 +793,58 @@ BikeLeft:AddButton({
             local char2 = plr.Character
             local hum2  = char2 and char2:FindFirstChildWhichIsA('Humanoid')
             local seat2 = hum2 and hum2.SeatPart
-            if not seat2 or not seat2:IsA('VehicleSeat') then return end
-            -- Ground-only gate (applies to both brake and reverse paths below)
-            if Toggles.GroundOnly and Toggles.GroundOnly.Value then
+            if not isVehicleSeat(seat2) then return end
+            -- Ground-only gate (silently bypassed when Airplane Mode is on)
+            if Toggles.GroundOnly and Toggles.GroundOnly.Value
+               and not (Toggles.AirplaneMode and Toggles.AirplaneMode.Value) then
                 local rp = RaycastParams.new()
                 rp.FilterType = Enum.RaycastFilterType.Exclude
-                local char2 = plr.Character
                 rp.FilterDescendantsInstances = { root.Parent, char2 }
                 local hit = workspace:Raycast(root.Position, Vector3.new(0, -6, 0), rp)
                 if not hit then return end
             end
-            local vel     = root.AssemblyLinearVelocity
-            local flatVel = Vector3.new(vel.X, 0, vel.Z)
-            local fwd     = root.CFrame.LookVector
-            local flatFwd = Vector3.new(fwd.X, 0, fwd.Z)
-            if flatFwd.Magnitude < 0.01 then return end
-            flatFwd = flatFwd.Unit
-            -- signed projection: positive = moving forward, negative = already reversing
-            local forwardSpeed = flatVel:Dot(flatFwd)
+            local vel = root.AssemblyLinearVelocity
+            local fwd = root.CFrame.LookVector
 
             -- reverse is its own independent force, not derived from brake.
-            -- cap scales with the force so a stronger reverse also tops out higher
-            -- (default 50 mph/s → ~20 mph reverse cap).
             local revMph      = tonumber(Options.ReverseInput.Value) or 50
-            local revAccel    = revMph * MPH_TO_STUDS              -- studs/s² when reversing
-            local revMaxStuds = (revMph * 0.4) * MPH_TO_STUDS      -- reverse top speed cap (studs/s)
+            local revAccel    = revMph * MPH_TO_STUDS
+            local revMaxStuds = (revMph * 0.4) * MPH_TO_STUDS
 
-            if forwardSpeed > 2 then
-                -- still moving forward: pure brake along forward axis
-                local reduction = math.min(forwardSpeed, brakeDecel * dt)
-                local newFlat   = flatVel - flatFwd * reduction
-                root.AssemblyLinearVelocity = Vector3.new(newFlat.X, vel.Y, newFlat.Z)
+            if Toggles.AirplaneMode and Toggles.AirplaneMode.Value then
+                -- 3D nose-direction brake / reverse (planes + tilted vehicles)
+                if fwd.Magnitude < 0.01 then return end
+                local forwardSpeed = vel:Dot(fwd)
+                if forwardSpeed > 2 then
+                    local reduction = math.min(forwardSpeed, brakeDecel * dt)
+                    root.AssemblyLinearVelocity = vel - fwd * reduction
+                else
+                    local currentRev = -forwardSpeed
+                    if currentRev < revMaxStuds then
+                        root.AssemblyLinearVelocity = vel - fwd * (revAccel * dt)
+                    end
+                end
             else
-                -- crawling, stopped, or already reversing: push backwards up to cap
-                local currentRev = -forwardSpeed  -- positive when moving backwards
-                if currentRev < revMaxStuds then
-                    local addition = revAccel * dt
-                    root.AssemblyLinearVelocity = Vector3.new(
-                        vel.X - flatFwd.X * addition,
-                        vel.Y,
-                        vel.Z - flatFwd.Z * addition
-                    )
+                -- Flat 2D brake / reverse (ground vehicles; preserves Y velocity)
+                local flatVel = Vector3.new(vel.X, 0, vel.Z)
+                local flatFwd = Vector3.new(fwd.X, 0, fwd.Z)
+                if flatFwd.Magnitude < 0.01 then return end
+                flatFwd = flatFwd.Unit
+                local forwardSpeed = flatVel:Dot(flatFwd)
+                if forwardSpeed > 2 then
+                    local reduction = math.min(forwardSpeed, brakeDecel * dt)
+                    local newFlat   = flatVel - flatFwd * reduction
+                    root.AssemblyLinearVelocity = Vector3.new(newFlat.X, vel.Y, newFlat.Z)
+                else
+                    local currentRev = -forwardSpeed
+                    if currentRev < revMaxStuds then
+                        local addition = revAccel * dt
+                        root.AssemblyLinearVelocity = Vector3.new(
+                            vel.X - flatFwd.X * addition,
+                            vel.Y,
+                            vel.Z - flatFwd.Z * addition
+                        )
+                    end
                 end
             end
         end)
@@ -809,7 +884,7 @@ BikeLeft:AddButton({
 
         local seat
         for _, v in pairs(workspace:GetDescendants()) do
-            if v:IsA('VehicleSeat') and v.Occupant
+            if isVehicleSeat(v) and v.Occupant
             and v.Occupant.Parent == char then
                 seat = v
                 break
@@ -817,7 +892,7 @@ BikeLeft:AddButton({
         end
 
         if not seat then
-            showToast('Get in a bike first')
+            showToast('Get in a ' .. VEHICLE_TERM .. ' first')
             return
         end
 
@@ -856,11 +931,11 @@ BikeLeft:AddInput('WheelieStrength', {
     Default = '8',
     Numeric = true,
     Finished = false,
-    Text = 'Wheelie Strength (rad/s)',
+    Text = WHEELIE_TERM .. ' Strength (rad/s)',
 })
 
 BikeLeft:AddToggle('WheelieBoost', {
-    Text = 'Wheelie Boost (hold C)',
+    Text = WHEELIE_TERM .. ' Boost (hold C)',
     Default = false,
     Callback = function(val)
         if val then
@@ -870,22 +945,22 @@ BikeLeft:AddToggle('WheelieBoost', {
                 local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
                 if not hum then return end
                 local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
+                if not isVehicleSeat(seat) then return end
                 local strength = tonumber(Options.WheelieStrength.Value) or 8
                 local rv  = seat.CFrame.RightVector
                 local cur = seat.AssemblyAngularVelocity
                 seat.AssemblyAngularVelocity = cur + rv * (strength - cur:Dot(rv))
             end)
-            showToast('Wheelie Boost ON — hold C')
+            showToast(WHEELIE_TERM .. ' Boost ON — hold C')
         else
             if _G.WheelieConn then _G.WheelieConn:Disconnect(); _G.WheelieConn = nil end
-            showToast('Wheelie Boost OFF')
+            showToast(WHEELIE_TERM .. ' Boost OFF')
         end
     end
 })
 
 BikeLeft:AddToggle('WheelieLock', {
-    Text = 'Wheelie Lock (V to lock/unlock)',
+    Text = WHEELIE_TERM .. ' Lock (V to lock/unlock)',
     Default = false,
     Callback = function(val)
         if val then
@@ -898,14 +973,14 @@ BikeLeft:AddToggle('WheelieLock', {
                 local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
                 if not hum then return end
                 local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
+                if not isVehicleSeat(seat) then return end
                 if locked then
                     locked = false
-                    showToast('Wheelie angle unlocked')
+                    showToast(WHEELIE_TERM .. ' angle unlocked')
                 else
                     lockedPitchY = seat.CFrame.LookVector.Y
                     locked = true
-                    showToast('Wheelie angle locked')
+                    showToast(WHEELIE_TERM .. ' angle locked')
                 end
             end)
 
@@ -915,7 +990,7 @@ BikeLeft:AddToggle('WheelieLock', {
                 local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
                 if not hum then return end
                 local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
+                if not isVehicleSeat(seat) then return end
                 local err = lockedPitchY - seat.CFrame.LookVector.Y
                 local rv  = seat.CFrame.RightVector
                 local cur = seat.AssemblyAngularVelocity
@@ -923,11 +998,11 @@ BikeLeft:AddToggle('WheelieLock', {
                 seat.AssemblyAngularVelocity = cur + rv * (correction - cur:Dot(rv))
             end)
 
-            showToast('Wheelie Lock ON — press V to lock angle')
+            showToast(WHEELIE_TERM .. ' Lock ON — press V to lock angle')
         else
             if _G.WheelieVConn   then _G.WheelieVConn:Disconnect();   _G.WheelieVConn   = nil end
             if _G.WheelieLocConn then _G.WheelieLocConn:Disconnect(); _G.WheelieLocConn = nil end
-            showToast('Wheelie Lock OFF')
+            showToast(WHEELIE_TERM .. ' Lock OFF')
         end
     end
 })
@@ -936,11 +1011,11 @@ BikeLeft:AddInput('StoppieStrength', {
     Default = '8',
     Numeric = true,
     Finished = false,
-    Text = 'Stoppie Strength (rad/s)',
+    Text = STOPPIE_TERM .. ' Strength (rad/s)',
 })
 
 BikeLeft:AddToggle('StoppieBoost', {
-    Text = 'Stoppie (hold ,)',
+    Text = STOPPIE_TERM .. ' (hold ,)',
     Default = false,
     Callback = function(val)
         if val then
@@ -950,16 +1025,16 @@ BikeLeft:AddToggle('StoppieBoost', {
                 local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
                 if not hum then return end
                 local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
+                if not isVehicleSeat(seat) then return end
                 local strength = tonumber(Options.StoppieStrength.Value) or 8
                 local rv  = seat.CFrame.RightVector
                 local cur = seat.AssemblyAngularVelocity
                 seat.AssemblyAngularVelocity = cur + rv * (-strength - cur:Dot(rv))
             end)
-            showToast('Stoppie ON — hold ,')
+            showToast(STOPPIE_TERM .. ' ON — hold ,')
         else
             if _G.StoppieConn then _G.StoppieConn:Disconnect(); _G.StoppieConn = nil end
-            showToast('Stoppie OFF')
+            showToast(STOPPIE_TERM .. ' OFF')
         end
     end
 })
@@ -983,7 +1058,7 @@ BikeLeft:AddToggle('CruiseControl', {
                 local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
                 if not hum then return end
                 local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
+                if not isVehicleSeat(seat) then return end
                 local vel = seat.AssemblyLinearVelocity
                 if vel.Magnitude < 0.5 then return end
                 local target = tonumber(Options.CruiseSpeedInput.Value) or 40
@@ -1018,7 +1093,7 @@ BikeLeft:AddToggle('NoWobble', {
                 local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
                 if not hum then return end
                 local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
+                if not isVehicleSeat(seat) then return end
                 -- preserve world-Y angular velocity (yaw, so you can still turn)
                 -- kill X and Z components (roll + pitch wobble)
                 local av = seat.AssemblyAngularVelocity
@@ -1030,6 +1105,37 @@ BikeLeft:AddToggle('NoWobble', {
             if _G.NoWobbleKeyConn then _G.NoWobbleKeyConn:Disconnect(); _G.NoWobbleKeyConn = nil end
             if _G.NoWobbleConn    then _G.NoWobbleConn:Disconnect();    _G.NoWobbleConn    = nil end
             showToast('No Wobble OFF')
+        end
+    end
+})
+
+-- Lock Steering: same idea as No Wobble but zeros yaw too.
+-- Vehicle can only go straight; no turning, no roll, no pitch.
+BikeLeft:AddToggle('LockSteering', {
+    Text = 'Lock Steering',
+    Default = false,
+    Tooltip = 'Zeros ALL angular velocity. Vehicle only moves forward — no turning at all.',
+    Callback = function(val)
+        if val then
+            -- auto-kill Patch Turn so the two don't fight each frame
+            if _G.TurnConn then
+                _G.TurnConn:Disconnect()
+                _G.TurnConn = nil
+                showToast('Patch Turn disabled (Lock Steering owns the angular velocity now)')
+            end
+            _G.LockSteeringConn = RunService.Heartbeat:Connect(function()
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local seat = hum.SeatPart
+                if not isVehicleSeat(seat) then return end
+                -- kill every axis: no roll, no pitch, no yaw
+                seat.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+            end)
+            showToast('Lock Steering ON')
+        else
+            if _G.LockSteeringConn then _G.LockSteeringConn:Disconnect(); _G.LockSteeringConn = nil end
+            showToast('Lock Steering OFF')
         end
     end
 })
@@ -1060,34 +1166,27 @@ BikeLeft:AddButton({
     end
 })
 
--- trail settings shared between the toggle and the settings panel
-local trailSettings = {
-    startR = 255, startG = 215, startB = 0,
-    endR   = 200, endG   = 100, endB   = 0,
-    lifetime      = 0.6,
-    halfWidth     = 0.5,
-    textureId     = '',
-    lightEmission = 0.5,
-    rainbow       = false,
-}
-local trailGui    = nil  -- assigned when trail panel is built below
 local bikeCustGui   = nil  -- assigned when bike customization panel is built below
 local partPickerGui = nil  -- assigned when part picker panel is built below
 
 Right:AddDivider()
 
--- ---- Freeze Bike -------------------------------------------------------
+-- ---- Freeze Vehicle ----------------------------------------------------
 Right:AddToggle('FreezeBike', {
-    Text = 'Freeze Bike',
+    Text = 'Freeze Vehicle',
     Default = false,
     Callback = function(val)
         if val then
-            local bikeModel = getBikeRoot()
-            if not bikeModel then
-                showToast('Get on a bike first')
+            -- explicit seated check (matches the Sticky / Lock Steering / Cruise pattern)
+            local char = plr.Character
+            local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+            local seat = hum and hum.SeatPart
+            if not isVehicleSeat(seat) then
+                showToast('Get on a ' .. VEHICLE_TERM .. ' first')
                 Toggles.FreezeBike:SetValue(false)
                 return
             end
+            local bikeModel = seat.Parent
             _G.FrozenBikeParts = {}
             for _, p in ipairs(bikeModel:GetDescendants()) do
                 if p:IsA('BasePart') then
@@ -1095,7 +1194,7 @@ Right:AddToggle('FreezeBike', {
                     p.Anchored = true
                 end
             end
-            showToast('Bike frozen')
+            showToast('Vehicle frozen')
         else
             if _G.FrozenBikeParts then
                 for p, vel in pairs(_G.FrozenBikeParts) do
@@ -1106,7 +1205,7 @@ Right:AddToggle('FreezeBike', {
                 end
                 _G.FrozenBikeParts = nil
             end
-            showToast('Bike unfrozen')
+            showToast('Vehicle unfrozen')
         end
     end
 })
@@ -1134,7 +1233,9 @@ Right:AddToggle('FlyMode', {
                 local speed = (tonumber(Options.FlySpeedInput.Value) or 60) * MPH_TO_STUDS
                 local fwd   = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
                 if fwd.Magnitude > 0.001 then fwd = fwd.Unit end
-                local right = cam.CFrame.RightVector
+                -- flatten right too so A/D stay horizontal regardless of camera pitch
+                local right = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
+                if right.Magnitude > 0.001 then right = right.Unit end
                 local dir   = Vector3.new(0, 0, 0)
                 if UIS:IsKeyDown(Enum.KeyCode.W) then dir = dir + fwd                end
                 if UIS:IsKeyDown(Enum.KeyCode.S) then dir = dir - fwd                end
@@ -1356,114 +1457,84 @@ end)
 
 Right:AddDivider()
 
--- Rainbow Bike moved into the Bike Customization panel.
-
-Right:AddButton({
-    Text = 'Bike Customization',
-    Func = function()
-        if bikeCustGui then bikeCustGui.Enabled = not bikeCustGui.Enabled end
-    end
+-- ---- Freecam ------------------------------------------------------------
+-- Roblox-style detached camera. WASD + Q (down) + E (up) + Shift (sprint x3)
+-- Mouse look while locked. Shift+P toggles, or use the toggle directly.
+Right:AddInput('FreecamSpeedInput', {
+    Default = '60',
+    Numeric = true,
+    Finished = false,
+    Text = 'Freecam Speed (studs/s)',
 })
 
-Right:AddDivider()
+local _freecamPrevType  = nil
+local _freecamPrevMouse = nil
+local _freecamYaw, _freecamPitch = 0, 0
 
--- ---- Bike Trail --------------------------------------------------------
-Right:AddToggle('BikeTrail', {
-    Text = 'Bike Trail',
+Right:AddToggle('Freecam', {
+    Text = 'Freecam (Shift+P to toggle)',
     Default = false,
     Callback = function(val)
+        local cam = workspace.CurrentCamera
         if val then
-            local _, bikeRoot = getBikeRoot()
-            if not bikeRoot then showToast('Get on a bike first') return end
-            pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy() end end)
-            pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy() end end)
-            pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy()  end end)
-            local hw = math.max(0.05, trailSettings.halfWidth)
-            local a0 = Instance.new('Attachment')
-            a0.Position = Vector3.new(0,  hw, 0)
-            a0.Parent   = bikeRoot
-            local a1 = Instance.new('Attachment')
-            a1.Position = Vector3.new(0, -hw, 0)
-            a1.Parent   = bikeRoot
-            local trail = Instance.new('Trail')
-            trail.Attachment0   = a0
-            trail.Attachment1   = a1
-            trail.Lifetime      = trailSettings.lifetime
-            trail.MinLength     = 0
-            trail.FaceCamera    = true
-            trail.LightEmission = trailSettings.lightEmission
-            trail.Texture       = trailSettings.textureId
-            trail.Transparency  = NumberSequence.new({
-                NumberSequenceKeypoint.new(0, 0),
-                NumberSequenceKeypoint.new(1, 1),
-            })
-            trail.Parent     = bikeRoot.Parent
-            _G.TrailAttach0  = a0
-            _G.TrailAttach1  = a1
-            _G.ActiveTrail   = trail
-            _G.TrailBikeRoot = bikeRoot
-            local frameTick = 0
-            local RS2 = game:GetService('RunService')
-            _G.TrailColorConn = RS2.Heartbeat:Connect(function()
-                frameTick += 1
-                if frameTick < 3 then return end
-                frameTick = 0
-                if not _G.ActiveTrail or not _G.ActiveTrail.Parent then return end
-                if trailSettings.rainbow or _G.RainbowOn then
-                    if _G.TrailBikeRoot and _G.TrailBikeRoot.Parent then
-                        _G.ActiveTrail.Color = ColorSequence.new(_G.TrailBikeRoot.Color)
-                    end
-                else
-                    local sc = Color3.fromRGB(trailSettings.startR, trailSettings.startG, trailSettings.startB)
-                    local ec = Color3.fromRGB(trailSettings.endR,   trailSettings.endG,   trailSettings.endB)
-                    _G.ActiveTrail.Color = ColorSequence.new({
-                        ColorSequenceKeypoint.new(0, sc),
-                        ColorSequenceKeypoint.new(1, ec),
-                    })
-                end
+            _freecamPrevType  = cam.CameraType
+            _freecamPrevMouse = UIS.MouseBehavior
+            cam.CameraType = Enum.CameraType.Scriptable
+            -- seed yaw/pitch from the current camera so there's no snap on enable
+            local lv = cam.CFrame.LookVector
+            _freecamYaw   = math.atan2(-lv.X, -lv.Z)
+            _freecamPitch = math.asin(math.clamp(lv.Y, -1, 1))
+            local pos = cam.CFrame.Position
+            UIS.MouseBehavior = Enum.MouseBehavior.LockCenter
+            _G.FreecamConn = RunService.RenderStepped:Connect(function(dt)
+                local md = UIS:GetMouseDelta()
+                local sens = 0.005
+                _freecamYaw   = _freecamYaw   - md.X * sens
+                _freecamPitch = math.clamp(_freecamPitch - md.Y * sens,
+                                           -math.rad(89), math.rad(89))
+                local lookCF = CFrame.fromEulerAnglesYXZ(_freecamPitch, _freecamYaw, 0)
+                local speed  = (tonumber(Options.FreecamSpeedInput.Value) or 60)
+                if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then speed = speed * 3 end
+                local fwd   = lookCF.LookVector
+                local right = lookCF.RightVector
+                local move  = Vector3.new(0, 0, 0)
+                if UIS:IsKeyDown(Enum.KeyCode.W) then move = move + fwd                end
+                if UIS:IsKeyDown(Enum.KeyCode.S) then move = move - fwd                end
+                if UIS:IsKeyDown(Enum.KeyCode.A) then move = move - right              end
+                if UIS:IsKeyDown(Enum.KeyCode.D) then move = move + right              end
+                if UIS:IsKeyDown(Enum.KeyCode.E) then move = move + Vector3.new(0,1,0) end
+                if UIS:IsKeyDown(Enum.KeyCode.Q) then move = move - Vector3.new(0,1,0) end
+                pos = pos + move * dt * speed
+                cam.CFrame = CFrame.new(pos) * lookCF
             end)
-            showToast('Trail ON')
+            showToast('Freecam ON')
         else
-            if _G.TrailColorConn then _G.TrailColorConn:Disconnect(); _G.TrailColorConn = nil end
-            pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy(); _G.TrailAttach0 = nil end end)
-            pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy(); _G.TrailAttach1 = nil end end)
-            pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy();  _G.ActiveTrail  = nil end end)
-            _G.TrailBikeRoot = nil
-            showToast('Trail OFF')
+            if _G.FreecamConn then _G.FreecamConn:Disconnect(); _G.FreecamConn = nil end
+            UIS.MouseBehavior = _freecamPrevMouse or Enum.MouseBehavior.Default
+            cam.CameraType = _freecamPrevType or Enum.CameraType.Custom
+            showToast('Freecam OFF')
         end
     end
 })
 
-Right:AddButton({
-    Text = 'Trail Settings',
-    Func = function()
-        if trailGui then trailGui.Enabled = not trailGui.Enabled end
+-- Shift+P keybind that flips the toggle (mirrors the in-menu toggle state)
+_G.FreecamKeyConn = UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode ~= Enum.KeyCode.P then return end
+    if not (UIS:IsKeyDown(Enum.KeyCode.LeftShift) or UIS:IsKeyDown(Enum.KeyCode.RightShift)) then return end
+    if Toggles.Freecam then
+        Toggles.Freecam:SetValue(not Toggles.Freecam.Value)
     end
-})
+end)
 
 Right:AddDivider()
 
-Right:AddInput('FovInput', {
-    Default = '70',
-    Numeric = true,
-    Finished = false,
-    Text = 'FOV',
-})
+-- Rainbow Bike moved into the Bike Customization panel.
 
 Right:AddButton({
-    Text = 'Apply FOV',
+    Text = VEHICLE_TERM_CAP .. ' Customization',
     Func = function()
-        local fov = math.clamp(tonumber(Options.FovInput.Value) or 70, 1, 120)
-        workspace.CurrentCamera.FieldOfView = fov
-        showToast('FOV set to ' .. fov)
-    end
-})
-
-Right:AddButton({
-    Text = 'Reset FOV',
-    Func = function()
-        workspace.CurrentCamera.FieldOfView = 70
-        showToast('FOV reset to 70')
+        if bikeCustGui then bikeCustGui.Enabled = not bikeCustGui.Enabled end
     end
 })
 
@@ -2274,7 +2345,7 @@ local exitBike = function()
     local char = plr.Character
     if not char then return end
     for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA('VehicleSeat') and v.Occupant and v.Occupant.Parent == char then
+        if isVehicleSeat(v) and v.Occupant and v.Occupant.Parent == char then
             local bikeNameVal = v.Parent:FindFirstChild('BikeName', true)
             if bikeNameVal and bikeNameVal.Value ~= '' then
                 pcall(function() RS.DeleteBikeNew:FireServer(bikeNameVal.Value) end)
@@ -2319,7 +2390,7 @@ flingOne = function(target)
     local targetRoot = targetChar:FindFirstChild('HumanoidRootPart')
     if not targetRoot then return end
     for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA('VehicleSeat') and v.Occupant
+        if isVehicleSeat(v) and v.Occupant
         and v.Occupant.Parent == targetChar then
             local r = v.Parent:FindFirstChildWhichIsA('BasePart')
             if r then targetRoot = r end
@@ -2371,7 +2442,7 @@ local function getBikeRiders()
     local riders = {}
     local seen = {}
     for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA('VehicleSeat') and v.Occupant then
+        if isVehicleSeat(v) and v.Occupant then
             local p = Players:GetPlayerFromCharacter(v.Occupant.Parent)
             if p and p ~= plr and not seen[p] then
                 seen[p] = true
@@ -2663,7 +2734,7 @@ local function refreshBikeESP()
     clearBikeESP()
     if not Toggles.BikeESP or not Toggles.BikeESP.Value then return end
     for _, obj in ipairs(workspace:GetDescendants()) do
-        if not obj:IsA('VehicleSeat') then continue end
+        if not isVehicleSeat(obj) then continue end
         local model = obj.Parent
         if not model then continue end
         local ownerName = 'Unoccupied'
@@ -2688,7 +2759,7 @@ local function refreshBikeESP()
         local lbl = Instance.new('TextLabel')
         lbl.Size                   = UDim2.new(1, 0, 1, 0)
         lbl.BackgroundTransparency = 1
-        lbl.Text                   = '[Bike] ' .. ownerName
+        lbl.Text                   = '[' .. VEHICLE_TERM_CAP .. '] ' .. ownerName
         lbl.TextColor3             = Color3.fromRGB(255, 200, 0)
         lbl.Font                   = Enum.Font.Gotham
         lbl.TextSize               = 13
@@ -2699,7 +2770,7 @@ local function refreshBikeESP()
 end
 
 ESPLeft:AddToggle('BikeESP', {
-    Text = 'Bike ESP',
+    Text = VEHICLE_TERM_CAP .. ' ESP',
     Default = false,
     Callback = function(val)
         if val then
@@ -2709,11 +2780,11 @@ ESPLeft:AddToggle('BikeESP', {
                 timer += 1
                 if timer >= 60 then timer = 0; refreshBikeESP() end
             end)
-            showToast('Bike ESP ON')
+            showToast(VEHICLE_TERM_CAP .. ' ESP ON')
         else
             clearBikeESP()
             if _G.BikeESPConn then _G.BikeESPConn:Disconnect(); _G.BikeESPConn = nil end
-            showToast('Bike ESP OFF')
+            showToast(VEHICLE_TERM_CAP .. ' ESP OFF')
         end
     end
 })
@@ -2896,7 +2967,10 @@ ESPLeft:AddToggle('AnimTweaks', {
                 if not hum then return end
                 local animator = hum:FindFirstChildWhichIsA('Animator')
                 if not animator then return end
-                local speed = tonumber(Options.AnimSpeedInput.Value) or 1.0
+                -- bail on invalid input rather than pinning to 1.0 every frame
+                -- (the old fallback was what made anims "feel frozen at default")
+                local speed = tonumber(Options.AnimSpeedInput.Value)
+                if not speed or speed <= 0 then return end
                 for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
                     pcall(function() track:AdjustSpeed(speed) end)
                 end
@@ -2949,7 +3023,7 @@ local SUBTEXT= Color3.fromRGB(160, 160, 160)
 local gui = Instance.new('ScreenGui')
 gui.Name = 'SpawnerGui'
 gui.ResetOnSpawn = false
-gui.DisplayOrder = 999
+gui.DisplayOrder = 1000  -- above Linoria (999), below customizer (1001)
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 
@@ -3047,7 +3121,7 @@ local titleLbl = Instance.new('TextLabel')
 titleLbl.Size = UDim2.new(1, -16, 1, 0)
 titleLbl.Position = UDim2.new(0, 10, 0, 0)
 titleLbl.BackgroundTransparency = 1
-titleLbl.Text = 'Bike Spawner'
+titleLbl.Text = VEHICLE_TERM_CAP .. ' Spawner'
 titleLbl.TextColor3 = TEXT
 titleLbl.Font = Enum.Font.GothamSemibold
 titleLbl.TextSize = 13
@@ -3091,12 +3165,16 @@ for _, bike in ipairs(bikeList) do
     card.BorderSizePixel = 1
     card.BorderColor3 = BORDER
     card.Text = ''
+    card.AutoButtonColor = false
     card.ZIndex = 12
     card.Parent = scroll
+    -- Linoria-style hover: brighten border to accent
+    card.MouseEnter:Connect(function() card.BorderColor3 = ACCENT end)
+    card.MouseLeave:Connect(function() card.BorderColor3 = BORDER end)
 
     local vpf = Instance.new('ViewportFrame')
     vpf.Size = UDim2.new(1, 0, 0, 108)
-    vpf.BackgroundColor3 = BG2
+    vpf.BackgroundTransparency = 1
     vpf.BorderSizePixel = 0
     vpf.ZIndex = 13
     vpf.Parent = card
@@ -3213,265 +3291,6 @@ end)
 
 end -- if BIKE_INFO.canSpawn
 
--- ============================================================
--- TRAIL SETTINGS PANEL
--- ============================================================
-
-do
-    local TRAIL_PRESETS = {
-        { name = 'Solid',   textureId = '',                        lightEmission = 0.5  },
-        { name = 'Neon',    textureId = '',                        lightEmission = 1.0  },
-        { name = 'Sparkle', textureId = 'rbxassetid://1308397735', lightEmission = 0.8  },
-        { name = 'Ribbon',  textureId = 'rbxassetid://16254848910', lightEmission = 0.4 },
-    }
-
-    local tg = Instance.new('ScreenGui')
-    tg.Name          = 'TrailSettingsGui'
-    tg.ResetOnSpawn  = false
-    tg.DisplayOrder  = 998
-    tg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    tg.Enabled       = false
-    tg.Parent        = CoreGui
-    trailGui         = tg
-
-    local panel = Instance.new('Frame')
-    panel.Size             = UDim2.new(0, 360, 0, 500)
-    panel.Position         = UDim2.new(0.5, -460, 0.5, -250)
-    panel.BackgroundColor3 = BG2
-    panel.BorderSizePixel  = 1
-    panel.BorderColor3     = BORDER
-    panel.Active           = true
-    panel.ZIndex           = 10
-    panel.Parent           = tg
-
-    -- drag
-    do
-        local drag, dragStart, startPos = false, nil, nil
-        panel.InputBegan:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
-                drag = true; dragStart = inp.Position; startPos = panel.Position
-            end
-        end)
-        panel.InputEnded:Connect(function(inp)
-            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
-        end)
-        game:GetService('UserInputService').InputChanged:Connect(function(inp)
-            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
-                local d = inp.Position - dragStart
-                panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-                                           startPos.Y.Scale, startPos.Y.Offset + d.Y)
-            end
-        end)
-    end
-
-    -- title bar
-    local title = Instance.new('Frame')
-    title.Size            = UDim2.new(1, 0, 0, 28)
-    title.BackgroundColor3 = BGSUB
-    title.BorderSizePixel = 0
-    title.ZIndex          = 11
-    title.Parent          = panel
-    local titleLbl = Instance.new('TextLabel')
-    titleLbl.Size  = UDim2.new(1, -36, 1, 0)
-    titleLbl.Position = UDim2.new(0, 8, 0, 0)
-    titleLbl.BackgroundTransparency = 1
-    titleLbl.Text  = 'Trail Settings'
-    titleLbl.TextColor3 = TEXT
-    titleLbl.Font  = Enum.Font.GothamBold
-    titleLbl.TextSize = 14
-    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
-    titleLbl.ZIndex = 12
-    titleLbl.Parent = title
-    local closeBtn = Instance.new('TextButton')
-    closeBtn.Size  = UDim2.new(0, 28, 0, 28)
-    closeBtn.Position = UDim2.new(1, -28, 0, 0)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-    closeBtn.BorderSizePixel = 0
-    closeBtn.Text  = 'X'
-    closeBtn.TextColor3 = TEXT
-    closeBtn.Font  = Enum.Font.GothamBold
-    closeBtn.TextSize = 13
-    closeBtn.ZIndex = 12
-    closeBtn.Parent = title
-    closeBtn.MouseButton1Click:Connect(function() tg.Enabled = false end)
-
-    -- helper: row label + value box
-    local rowY = 36
-    local function makeRow(labelText, default, onChanged)
-        local lbl = Instance.new('TextLabel')
-        lbl.Size  = UDim2.new(0, 130, 0, 22)
-        lbl.Position = UDim2.new(0, 10, 0, rowY)
-        lbl.BackgroundTransparency = 1
-        lbl.Text  = labelText
-        lbl.TextColor3 = TEXT
-        lbl.Font  = Enum.Font.Gotham
-        lbl.TextSize = 13
-        lbl.TextXAlignment = Enum.TextXAlignment.Left
-        lbl.ZIndex = 11
-        lbl.Parent = panel
-
-        local box = Instance.new('TextBox')
-        box.Size  = UDim2.new(0, 160, 0, 22)
-        box.Position = UDim2.new(0, 145, 0, rowY)
-        box.BackgroundColor3 = BGSUB
-        box.BorderColor3     = BORDER
-        box.BorderSizePixel  = 1
-        box.Text  = tostring(default)
-        box.TextColor3 = TEXT
-        box.Font  = Enum.Font.Gotham
-        box.TextSize = 13
-        box.ZIndex = 11
-        box.Parent = panel
-        box.FocusLost:Connect(function() onChanged(box.Text) end)
-        rowY += 32
-        return box
-    end
-
-    local function makeDivLine()
-        local line = Instance.new('Frame')
-        line.Size = UDim2.new(1, -20, 0, 1)
-        line.Position = UDim2.new(0, 10, 0, rowY + 6)
-        line.BackgroundColor3 = BORDER
-        line.BorderSizePixel = 0
-        line.ZIndex = 11
-        line.Parent = panel
-        rowY += 18
-    end
-
-    -- Type preset buttons
-    local typeLbl = Instance.new('TextLabel')
-    typeLbl.Size  = UDim2.new(0, 80, 0, 22)
-    typeLbl.Position = UDim2.new(0, 10, 0, rowY)
-    typeLbl.BackgroundTransparency = 1
-    typeLbl.Text  = 'Type:'
-    typeLbl.TextColor3 = TEXT
-    typeLbl.Font  = Enum.Font.GothamBold
-    typeLbl.TextSize = 13
-    typeLbl.TextXAlignment = Enum.TextXAlignment.Left
-    typeLbl.ZIndex = 11
-    typeLbl.Parent = panel
-    local presetBtns = {}
-    for i, preset in ipairs(TRAIL_PRESETS) do
-        local btn = Instance.new('TextButton')
-        btn.Size  = UDim2.new(0, 74, 0, 22)
-        btn.Position = UDim2.new(0, 70 + (i-1)*80, 0, rowY)
-        btn.BackgroundColor3 = BGSUB
-        btn.BorderColor3     = BORDER
-        btn.BorderSizePixel  = 1
-        btn.Text  = preset.name
-        btn.TextColor3 = TEXT
-        btn.Font  = Enum.Font.Gotham
-        btn.TextSize = 12
-        btn.ZIndex = 11
-        btn.Parent = panel
-        presetBtns[i] = btn
-        btn.MouseButton1Click:Connect(function()
-            trailSettings.textureId     = preset.textureId
-            trailSettings.lightEmission = preset.lightEmission
-            for _, b in ipairs(presetBtns) do b.BackgroundColor3 = BGSUB end
-            btn.BackgroundColor3 = ACCENT
-            -- live-apply if trail active
-            if _G.ActiveTrail and _G.ActiveTrail.Parent then
-                _G.ActiveTrail.Texture       = preset.textureId
-                _G.ActiveTrail.LightEmission = preset.lightEmission
-            end
-        end)
-    end
-    rowY += 36
-
-    -- Custom Texture ID
-    local texBox = makeRow('Texture ID', '', function(v)
-        trailSettings.textureId = v
-        if _G.ActiveTrail and _G.ActiveTrail.Parent then
-            _G.ActiveTrail.Texture = v
-        end
-    end)
-
-    makeDivLine()
-
-    -- Start Color
-    makeRow('Start R', trailSettings.startR, function(v)
-        trailSettings.startR = math.clamp(tonumber(v) or 255, 0, 255)
-    end)
-    makeRow('Start G', trailSettings.startG, function(v)
-        trailSettings.startG = math.clamp(tonumber(v) or 215, 0, 255)
-    end)
-    makeRow('Start B', trailSettings.startB, function(v)
-        trailSettings.startB = math.clamp(tonumber(v) or 0, 0, 255)
-    end)
-
-    makeDivLine()
-
-    -- End Color
-    makeRow('End R', trailSettings.endR, function(v)
-        trailSettings.endR = math.clamp(tonumber(v) or 200, 0, 255)
-    end)
-    makeRow('End G', trailSettings.endG, function(v)
-        trailSettings.endG = math.clamp(tonumber(v) or 100, 0, 255)
-    end)
-    makeRow('End B', trailSettings.endB, function(v)
-        trailSettings.endB = math.clamp(tonumber(v) or 0, 0, 255)
-    end)
-
-    makeDivLine()
-
-    -- Lifetime & Width
-    makeRow('Lifetime (s)', trailSettings.lifetime, function(v)
-        local n = math.clamp(tonumber(v) or 0.6, 0.05, 10)
-        trailSettings.lifetime = n
-        if _G.ActiveTrail and _G.ActiveTrail.Parent then _G.ActiveTrail.Lifetime = n end
-    end)
-    makeRow('Width (studs)', trailSettings.halfWidth * 2, function(v)
-        local n = math.clamp(tonumber(v) or 1, 0.1, 8)
-        trailSettings.halfWidth = n / 2
-        if _G.TrailAttach0 and _G.TrailAttach0.Parent then
-            _G.TrailAttach0.Position = Vector3.new(0,  trailSettings.halfWidth, 0)
-            _G.TrailAttach1.Position = Vector3.new(0, -trailSettings.halfWidth, 0)
-        end
-    end)
-    makeRow('Light Emission', trailSettings.lightEmission, function(v)
-        local n = math.clamp(tonumber(v) or 0.5, 0, 1)
-        trailSettings.lightEmission = n
-        if _G.ActiveTrail and _G.ActiveTrail.Parent then _G.ActiveTrail.LightEmission = n end
-    end)
-
-    makeDivLine()
-
-    -- Rainbow toggle
-    local rbLabel = Instance.new('TextLabel')
-    rbLabel.Size  = UDim2.new(0, 130, 0, 22)
-    rbLabel.Position = UDim2.new(0, 10, 0, rowY)
-    rbLabel.BackgroundTransparency = 1
-    rbLabel.Text  = 'Rainbow Trail'
-    rbLabel.TextColor3 = TEXT
-    rbLabel.Font  = Enum.Font.Gotham
-    rbLabel.TextSize = 13
-    rbLabel.TextXAlignment = Enum.TextXAlignment.Left
-    rbLabel.ZIndex = 11
-    rbLabel.Parent = panel
-    local rbBtn = Instance.new('TextButton')
-    rbBtn.Size  = UDim2.new(0, 80, 0, 22)
-    rbBtn.Position = UDim2.new(0, 145, 0, rowY)
-    rbBtn.BackgroundColor3 = BGSUB
-    rbBtn.BorderColor3     = BORDER
-    rbBtn.BorderSizePixel  = 1
-    rbBtn.Text  = 'OFF'
-    rbBtn.TextColor3 = TEXT
-    rbBtn.Font  = Enum.Font.Gotham
-    rbBtn.TextSize = 13
-    rbBtn.ZIndex = 11
-    rbBtn.Parent = panel
-    rbBtn.MouseButton1Click:Connect(function()
-        trailSettings.rainbow = not trailSettings.rainbow
-        if trailSettings.rainbow then
-            rbBtn.BackgroundColor3 = ACCENT
-            rbBtn.Text = 'ON'
-        else
-            rbBtn.BackgroundColor3 = BGSUB
-            rbBtn.Text = 'OFF'
-        end
-    end)
-end
 
 -- ============================================================
 -- BIKE CUSTOMIZATION PANEL
@@ -3512,7 +3331,7 @@ do
 
     local function applyToAll(fn, saFn)
         local model = getTargetModel()
-        if not model then showToast('Not on a bike'); return end
+        if not model then showToast('Not on a ' .. VEHICLE_TERM); return end
         for _, p in ipairs(model:GetDescendants()) do
             if p:IsA('BasePart') then
                 pcall(fn, p)
@@ -3523,7 +3342,7 @@ do
 
     local function applyToWheels(fn, saFn)
         local model = getTargetModel()
-        if not model then showToast('Not on a bike'); return end
+        if not model then showToast('Not on a ' .. VEHICLE_TERM); return end
         local parts = {}
         for _, p in ipairs(model:GetDescendants()) do
             if p:IsA('BasePart') and isWheelPart(p) then
@@ -3545,7 +3364,7 @@ do
 
     local function applyToBody(fn, saFn)
         local model = getTargetModel()
-        if not model then showToast('Not on a bike'); return end
+        if not model then showToast('Not on a ' .. VEHICLE_TERM); return end
         local wheelSet = {}
         for _, p in ipairs(model:GetDescendants()) do
             if p:IsA('BasePart') and isWheelPart(p) then wheelSet[p] = true end
@@ -3567,6 +3386,7 @@ do
         local model = getTargetModel()
         if not model then return nil end
         local seat = model:FindFirstChildWhichIsA('VehicleSeat', true)
+                  or model:FindFirstChildWhichIsA('Seat', true)
         return seat or model.PrimaryPart or model:FindFirstChildWhichIsA('BasePart', true)
     end
 
@@ -3615,11 +3435,17 @@ do
     titleBar.ZIndex           = 11
     titleBar.Parent           = panel
     do
+        -- accent underline (Linoria signature divider between title and content)
+        local accentLine = Instance.new('Frame')
+        accentLine.Size = UDim2.new(1, 0, 0, 1); accentLine.Position = UDim2.new(0, 0, 1, 0)
+        accentLine.BackgroundColor3 = ACCENT; accentLine.BorderSizePixel = 0
+        accentLine.ZIndex = 12; accentLine.Parent = titleBar
+
         local tl = Instance.new('TextLabel')
-        tl.Size = UDim2.new(1, -140, 1, 0); tl.Position = UDim2.new(0, 8, 0, 0)
-        tl.BackgroundTransparency = 1; tl.Text = 'Bike Customization'
-        tl.TextColor3 = TEXT; tl.Font = Enum.Font.GothamBold
-        tl.TextSize = 14; tl.TextXAlignment = Enum.TextXAlignment.Left
+        tl.Size = UDim2.new(1, -140, 1, 0); tl.Position = UDim2.new(0, 10, 0, 0)
+        tl.BackgroundTransparency = 1; tl.Text = VEHICLE_TERM_CAP .. ' Customization'
+        tl.TextColor3 = TEXT; tl.Font = Enum.Font.GothamSemibold
+        tl.TextSize = 13; tl.TextXAlignment = Enum.TextXAlignment.Left
         tl.ZIndex = 12; tl.Parent = titleBar
 
         local sl = Instance.new('TextLabel')
@@ -3670,20 +3496,26 @@ do
 
     local _bcOrder = 0
     local function bcNext() _bcOrder = _bcOrder + 1; return _bcOrder end
+    -- Linoria-style: flat transparent header row, small caps accent label,
+    -- thin accent underline that stops short on the right
     local function bcSecHdr(label)
         if _bcOrder > 0 then
             local gap = Instance.new('Frame')
-            gap.Size = UDim2.new(1,0,0,6); gap.BackgroundTransparency = 1
+            gap.Size = UDim2.new(1,0,0,10); gap.BackgroundTransparency = 1
             gap.BorderSizePixel = 0; gap.LayoutOrder = bcNext(); gap.ZIndex = 11; gap.Parent = scroll
         end
         local f = Instance.new('Frame')
-        f.Size = UDim2.new(1,0,0,28); f.BackgroundColor3 = BGSUB
+        f.Size = UDim2.new(1,0,0,22); f.BackgroundTransparency = 1
         f.BorderSizePixel = 0; f.LayoutOrder = bcNext(); f.ZIndex = 11; f.Parent = scroll
         local l = Instance.new('TextLabel')
-        l.Size = UDim2.new(1,-10,1,0); l.Position = UDim2.new(0,10,0,0)
+        l.Size = UDim2.new(1,-10,1,-3); l.Position = UDim2.new(0,10,0,0)
         l.BackgroundTransparency = 1; l.Text = label; l.TextColor3 = ACCENT
-        l.Font = Enum.Font.GothamBold; l.TextSize = 12
+        l.Font = Enum.Font.GothamBold; l.TextSize = 11
         l.TextXAlignment = Enum.TextXAlignment.Left; l.ZIndex = 12; l.Parent = f
+        local rule = Instance.new('Frame')
+        rule.Size = UDim2.new(1,-20,0,1); rule.Position = UDim2.new(0,10,1,-2)
+        rule.BackgroundColor3 = ACCENT; rule.BorderSizePixel = 0
+        rule.BackgroundTransparency = 0.55; rule.ZIndex = 12; rule.Parent = f
     end
     local function bcRow(h)
         local f = Instance.new('Frame')
@@ -3705,6 +3537,9 @@ do
         b.BackgroundColor3 = BGSUB; b.BorderSizePixel = 1; b.BorderColor3 = BORDER
         b.Text = tostring(def or ''); b.TextColor3 = TEXT; b.Font = Enum.Font.Gotham
         b.TextSize = 12; b.ClearTextOnFocus = false; b.ZIndex = 12; b.Parent = par
+        -- accent border on focus (Linoria-style)
+        b.Focused:Connect(function() b.BorderColor3 = ACCENT end)
+        b.FocusLost:Connect(function() b.BorderColor3 = BORDER end)
         return b
     end
     local function bcBtn(par, text, x, y, w, h)
@@ -3712,7 +3547,14 @@ do
         b.Size = UDim2.new(0,w or 80,0,h or 22); b.Position = UDim2.new(0,x,0,y)
         b.BackgroundColor3 = BGSUB; b.BorderSizePixel = 1; b.BorderColor3 = BORDER
         b.Text = text; b.TextColor3 = TEXT; b.Font = Enum.Font.Gotham
-        b.TextSize = 12; b.ZIndex = 12; b.Parent = par
+        b.TextSize = 12; b.ZIndex = 12; b.AutoButtonColor = false; b.Parent = par
+        -- hover state: brighten background slightly
+        b.MouseEnter:Connect(function()
+            if b.BackgroundColor3 == BGSUB then b.BackgroundColor3 = BORDER end
+        end)
+        b.MouseLeave:Connect(function()
+            if b.BackgroundColor3 == BORDER then b.BackgroundColor3 = BGSUB end
+        end)
         return b
     end
     local function bcTog(par, x, y, w, h)
@@ -3876,7 +3718,7 @@ do
             local mult = tonumber(inp.Text) or 1.0
             if mult <= 0 then showToast('Invalid scale'); return end
             local model = getTargetModel()
-            if not model then showToast('Not on a bike'); return end
+            if not model then showToast('Not on a ' .. VEHICLE_TERM); return end
             local parts = {}
             for _, p in ipairs(model:GetDescendants()) do
                 if p:IsA('BasePart') then table.insert(parts, p) end
@@ -3995,7 +3837,6 @@ do
             if togState.rb then
                 bcTogOn(togBtns.rb)
                 local hue = 0
-                _G.RainbowOn = true
                 if _G.RainbowConn then _G.RainbowConn:Disconnect() end
                 _G.RainbowConn = RunService.Heartbeat:Connect(function(dt)
                     local model = getTargetModel()
@@ -4009,7 +3850,6 @@ do
                 end)
             else
                 bcTogOff(togBtns.rb)
-                _G.RainbowOn = false
                 if _G.RainbowConn then _G.RainbowConn:Disconnect(); _G.RainbowConn = nil end
             end
         end)
@@ -4039,7 +3879,6 @@ do
             end
             effInst.headlight=nil; effInst.spotlights={}
             -- kill rainbow heartbeat if active
-            _G.RainbowOn = false
             if _G.RainbowConn then _G.RainbowConn:Disconnect(); _G.RainbowConn = nil end
             for k in pairs(togState) do togState[k]=false end
             togState.shad=true
@@ -4262,7 +4101,7 @@ do
             local name = cfgNameInp.Text
             if name == '' then showToast('Enter a config name'); return end
             local model = getTargetModel()
-            if not model then showToast('Not on a bike'); return end
+            if not model then showToast('Not on a ' .. VEHICLE_TERM); return end
             local data = {}
             for _, p in ipairs(model:GetDescendants()) do
                 if p:IsA('BasePart') then
@@ -4304,7 +4143,7 @@ do
             local data = cfgTable[cfgSelName]
             if not data then showToast('Config not found'); return end
             local model = getTargetModel()
-            if not model then showToast('Not on a bike'); return end
+            if not model then showToast('Not on a ' .. VEHICLE_TERM); return end
             local applied = 0
             for _, p in ipairs(model:GetDescendants()) do
                 if p:IsA('BasePart') then
@@ -4322,10 +4161,13 @@ do
                     end
                 end
             end
-            showToast('Loaded "' .. cfgSelName .. '" (' .. applied .. ' parts)')
+            showToast('Loaded "' .. cfgSelName .. '" to ' .. applied .. ' parts')
         end)
     end
 end
+
+-- ============================================================
+
 
 -- ============================================================
 -- PART PICKER WINDOW  (Dex-style tree explorer)
@@ -5190,6 +5032,7 @@ do
 end
 
 -- ============================================================
+
 -- MINIMAP
 -- ============================================================
 
@@ -5728,16 +5571,23 @@ _G.SMCleanup = function()
                           'NoWobbleConn', 'NoWobbleKeyConn',
                           'AntiAdminConn', 'OptimizerConn',
                           'FlyConn', 'AntiFallConn',
-                          'RainbowConn', 'TrailColorConn',
+                          'RainbowConn',
                           'AdminESPConn', 'BikeESPConn', 'SpeedTagConn', 'SpeedTagLeaveConn',
                           'PlayerESPConn', 'PlayerESPCharConn',
                           'JumpKeyConn',
+                          'FreecamConn', 'FreecamKeyConn',
+                          'StickyConn', 'LockSteeringConn',
+                          'MenuToggleConn',
                           'AutoFixScanConn', 'AutoFixSeatConn', 'AutoFixCharConn'}) do
         if _G[key] then
             pcall(function() _G[key]:Disconnect() end)
             _G[key] = nil
         end
     end
+
+    -- restore camera + mouse from freecam if it was active on reload
+    pcall(function() workspace.CurrentCamera.CameraType = Enum.CameraType.Custom end)
+    pcall(function() UIS.MouseBehavior = Enum.MouseBehavior.Default end)
 
     -- restore world gravity
     pcall(function() workspace.Gravity = 196.2 end)
@@ -5755,11 +5605,6 @@ _G.SMCleanup = function()
 
     -- clear hitbox selection boxes
     pcall(clearHitboxes)
-
-    -- cleanup bike trail
-    pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy() end end)
-    pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy() end end)
-    pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy()  end end)
 
     -- cleanup ESP overlays
     pcall(clearAdminESP)
@@ -5785,7 +5630,6 @@ _G.SMCleanup = function()
     -- destroy ScreenGuis this script owns
     pcall(function() gui:Destroy() end)
     pcall(function() minimapGui:Destroy() end)
-    pcall(function() if trailGui      then trailGui:Destroy()      end end)
     pcall(function() if bikeCustGui   then bikeCustGui:Destroy()   end end)
     pcall(function() if partPickerGui then partPickerGui:Destroy() end end)
 
