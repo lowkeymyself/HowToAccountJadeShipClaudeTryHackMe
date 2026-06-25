@@ -132,12 +132,13 @@ pcall(function()
     Library.ScreenGui.DisplayOrder = 999
     Library.ScreenGui.Parent = CoreGui
 end)
+-- menu toggle key: Delete (was RightControl by default)
+pcall(function() Library.ToggleKeybind = Enum.KeyCode.Delete end)
 
 local Tabs = {
     Main     = Window:AddTab('Main'),
-    Troll    = Window:AddTab('Troll'),
+    General  = Window:AddTab('General'),
     Maps     = Window:AddTab('Maps'),
-    ESP      = Window:AddTab('ESP'),
     Settings = Window:AddTab('Settings')
 }
 
@@ -491,6 +492,14 @@ BikeLeft:AddInput('AccelInput', {
     Text = 'Acceleration (mph/s)',
 })
 
+-- Ground-only gate: when ON, speed + brake + reverse only apply while bike is grounded.
+-- A 6-stud downward raycast from the seat (with the player filtered out) is the check.
+BikeLeft:AddToggle('GroundOnly', {
+    Text = 'Ground-Only Physics',
+    Default = false,
+    Tooltip = 'Speed, brake, and reverse only fire while the bike is touching ground.',
+})
+
 BikeLeft:AddButton({
     Text = 'Unpatch Bike',
     Func = function()
@@ -541,6 +550,15 @@ BikeLeft:AddButton({
                 _G.SpeedConn:Disconnect()
                 _G.SpeedConn = nil
                 return
+            end
+            -- Ground-only gate
+            if Toggles.GroundOnly and Toggles.GroundOnly.Value then
+                local rp = RaycastParams.new()
+                rp.FilterType = Enum.RaycastFilterType.Exclude
+                local char2 = plr.Character
+                rp.FilterDescendantsInstances = { root.Parent, char2 }
+                local hit = workspace:Raycast(root.Position, Vector3.new(0, -6, 0), rp)
+                if not hit then return end
             end
             local vel     = root.AssemblyLinearVelocity
             local flatVel = Vector3.new(vel.X, 0, vel.Z)
@@ -683,6 +701,15 @@ BikeLeft:AddButton({
                 _G.BrakeConn:Disconnect()
                 _G.BrakeConn = nil
                 return
+            end
+            -- Ground-only gate (applies to both brake and reverse paths below)
+            if Toggles.GroundOnly and Toggles.GroundOnly.Value then
+                local rp = RaycastParams.new()
+                rp.FilterType = Enum.RaycastFilterType.Exclude
+                local char2 = plr.Character
+                rp.FilterDescendantsInstances = { root.Parent, char2 }
+                local hit = workspace:Raycast(root.Position, Vector3.new(0, -6, 0), rp)
+                if not hit then return end
             end
             local vel     = root.AssemblyLinearVelocity
             local flatVel = Vector3.new(vel.X, 0, vel.Z)
@@ -964,9 +991,10 @@ BikeLeft:AddToggle('NoWobble', {
                 if not hum then return end
                 local seat = hum.SeatPart
                 if not seat or not seat:IsA('VehicleSeat') then return end
-                local rv  = seat.CFrame.RightVector
-                local av  = seat.AssemblyAngularVelocity
-                seat.AssemblyAngularVelocity = rv * av:Dot(rv)
+                -- preserve world-Y angular velocity (yaw, so you can still turn)
+                -- kill X and Z components (roll + pitch wobble)
+                local av = seat.AssemblyAngularVelocity
+                seat.AssemblyAngularVelocity = Vector3.new(0, av.Y, 0)
             end)
 
             showToast('No Wobble ON — press N to lock/release')
@@ -980,64 +1008,7 @@ BikeLeft:AddToggle('NoWobble', {
 
 BikeLeft:AddDivider()
 
-BikeLeft:AddInput('AnimSpeedInput', {
-    Default = '1.0',
-    Numeric = true,
-    Finished = false,
-    Text = 'Anim Speed (multiplier)',
-})
-
-BikeLeft:AddToggle('AnimTweaks', {
-    Text = 'Anim Tweaks (bike only)',
-    Default = false,
-    Callback = function(val)
-        if val then
-            _G.AnimConn = RunService.Heartbeat:Connect(function()
-                local char = plr.Character
-                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
-                if not hum then return end
-                local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
-                local animator = hum:FindFirstChildWhichIsA('Animator')
-                if not animator then return end
-                local speed = tonumber(Options.AnimSpeedInput.Value) or 1.0
-                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-                    pcall(function() track:AdjustSpeed(speed) end)
-                end
-            end)
-            showToast('Anim tweaks ON')
-        else
-            if _G.AnimConn then _G.AnimConn:Disconnect(); _G.AnimConn = nil end
-            local char = plr.Character
-            local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
-            local anim = hum  and hum:FindFirstChildWhichIsA('Animator')
-            if anim then
-                for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
-                    pcall(function() track:AdjustSpeed(1) end)
-                end
-            end
-            showToast('Anim tweaks OFF')
-        end
-    end
-})
-
-BikeLeft:AddToggle('HitboxViewer', {
-    Text = 'Hitbox Viewer',
-    Default = false,
-    Callback = function(val)
-        if val then
-            refreshHitboxes()
-            local timer = 0
-            _G.HitboxConn = game:GetService('RunService').Heartbeat:Connect(function()
-                timer += 1
-                if timer >= 60 then timer = 0; refreshHitboxes() end
-            end)
-        else
-            clearHitboxes()
-            if _G.HitboxConn then _G.HitboxConn:Disconnect(); _G.HitboxConn = nil end
-        end
-    end
-})
+-- AnimTweaks + HitboxViewer moved to the General tab (universal player features)
 
 BikeLeft:AddButton({
     Text = 'Kill Velocity',
@@ -1173,15 +1144,15 @@ Right:AddToggle('AntiFall', {
                 local cf = seat.CFrame
                 -- rv.Y = sine of roll angle: 0 when upright, ±1 when fully tipped sideways
                 local roll = cf.RightVector.Y
-                if math.abs(roll) < 0.06 then return end  -- dead zone (~3 deg), don't touch physics
+                if math.abs(roll) < 0.10 then return end  -- dead zone (~5.7 deg), preserves natural lean
                 -- rebuild CFrame preserving LookVector (carries yaw + pitch), zero roll only
                 local lv    = cf.LookVector
                 local right = lv:Cross(Vector3.new(0, 1, 0))
                 if right.Magnitude < 0.05 then return end  -- near-vertical edge case
                 right = right.Unit
                 local newUp = right:Cross(lv).Unit
-                -- proportional lerp: gentle when barely tilted, stronger as bike tips
-                local alpha = math.clamp(math.abs(roll) * 0.4, 0.03, 0.22)
+                -- proportional lerp: gentle when barely tilted, capped lower for smoothness
+                local alpha = math.clamp(math.abs(roll) * 0.3, 0.02, 0.16)
                 seat.CFrame = cf:Lerp(CFrame.fromMatrix(cf.Position, right, newUp), alpha)
             end)
             showToast('Anti-Fall ON')
@@ -1357,43 +1328,7 @@ end)
 
 Right:AddDivider()
 
--- ---- Rainbow Bike / Custom Color ---------------------------------------
-Right:AddInput('RainbowSpeedInput', {
-    Default = '0.4',
-    Numeric = true,
-    Finished = false,
-    Text = 'Rainbow Speed',
-})
-
-Right:AddToggle('RainbowBike', {
-    Text = 'Rainbow Bike',
-    Default = false,
-    Callback = function(val)
-        if val then
-            local RS2 = game:GetService('RunService')
-            local hue = 0
-            local rainbowRoot = nil
-            _G.RainbowConn = RS2.Heartbeat:Connect(function(dt)
-                rainbowRoot = cachedRoot(rainbowRoot)
-                if not rainbowRoot then return end
-                local bikeModel = rainbowRoot.Parent
-                if not bikeModel then return end
-                local speed = tonumber(Options.RainbowSpeedInput.Value) or 0.4
-                hue = (hue + dt * speed) % 1
-                local col = Color3.fromHSV(hue, 1, 1)
-                for _, p in ipairs(bikeModel:GetDescendants()) do
-                    if p:IsA('BasePart') then pcall(function() p.Color = col end) end
-                end
-            end)
-            showToast('Rainbow ON')
-        else
-            if _G.RainbowConn then _G.RainbowConn:Disconnect(); _G.RainbowConn = nil end
-            showToast('Rainbow OFF')
-        end
-    end
-})
-
-Right:AddDivider()
+-- Rainbow Bike moved into the Bike Customization panel.
 
 Right:AddButton({
     Text = 'Bike Customization',
@@ -1446,7 +1381,7 @@ Right:AddToggle('BikeTrail', {
                 if frameTick < 3 then return end
                 frameTick = 0
                 if not _G.ActiveTrail or not _G.ActiveTrail.Parent then return end
-                if trailSettings.rainbow or Toggles.RainbowBike.Value then
+                if trailSettings.rainbow or _G.RainbowOn then
                     if _G.TrailBikeRoot and _G.TrailBikeRoot.Parent then
                         _G.ActiveTrail.Color = ColorSequence.new(_G.TrailBikeRoot.Color)
                     end
@@ -2088,6 +2023,15 @@ MapLeft:AddButton({
     end,
 })
 
+-- Universal teleport: works on cloned maps (Aero) and asset-loaded maps (Supermoto).
+MapLeft:AddButton({
+    Text = 'Teleport to Last Map',
+    Func = function()
+        if #loadedMaps == 0 then showToast('No map loaded yet') return end
+        teleportOntoMap(loadedMaps[#loadedMaps])
+    end
+})
+
 -- everything below this line is only built in the target game
 if isTargetGame then
 
@@ -2175,15 +2119,7 @@ if isTargetGame then
 
     MapLeft:AddDivider()
 
-    MapLeft:AddButton({
-        Text = 'Teleport to Last Map',
-        Func = function()
-            if #loadedMaps == 0 then showToast('No map loaded yet') return end
-            teleportOntoMap(loadedMaps[#loadedMaps])
-        end
-    })
-
-    MapLeft:AddDivider()
+    -- ("Teleport to Last Map" lives above the isTargetGame gate now -- universal)
 
     -- import a file that was exported from another game session.
     -- the file lives in your executor's workspace folder under SuperMotoMaps/.
@@ -2447,17 +2383,18 @@ refreshHitboxes = function()
     end
 end
 
-local TrollLeft  = Tabs.Troll:AddLeftGroupbox('Fling')
-local TrollRight = Tabs.Troll:AddRightGroupbox('Target')
+local TrollLeft  = Tabs.General:AddLeftGroupbox('Fling')
+local TrollRight = Tabs.General:AddRightGroupbox('ESP & Players')
 
-TrollRight:AddInput('FlingTarget', {
+-- Fling target input + Fling User button live next to the rest of the fling actions
+TrollLeft:AddInput('FlingTarget', {
     Default = '',
     Numeric = false,
     Finished = false,
     Text = 'Username or display name',
 })
 
-TrollRight:AddButton({
+TrollLeft:AddButton({
     Text = 'Fling User',
     Func = function()
         local query = Options.FlingTarget.Value
@@ -2588,10 +2525,10 @@ TrollLeft:AddToggle('TouchFling', {
 })
 
 -- ============================================================
--- ESP TAB
+-- ESP / Player visuals (lives in the General tab's right groupbox)
 -- ============================================================
 
-local ESPLeft = Tabs.ESP:AddLeftGroupbox('ESP')
+local ESPLeft = TrollRight  -- alias: ESP toggles land in the General right groupbox
 
 ESPLeft:AddInput('AdminNames', {
     Default  = '',
@@ -2907,6 +2844,66 @@ ESPLeft:AddButton({
     Func = function()
         refreshPlayerESP()
         showToast('Player ESP refreshed')
+    end
+})
+
+ESPLeft:AddDivider()
+
+-- ---- Anim Tweaks (moved from Main; universal player feature) -------------
+ESPLeft:AddInput('AnimSpeedInput', {
+    Default = '1.0',
+    Numeric = true,
+    Finished = false,
+    Text = 'Anim Speed (multiplier)',
+})
+
+ESPLeft:AddToggle('AnimTweaks', {
+    Text = 'Anim Tweaks',
+    Default = false,
+    Callback = function(val)
+        if val then
+            _G.AnimConn = RunService.Heartbeat:Connect(function()
+                local char = plr.Character
+                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                local animator = hum:FindFirstChildWhichIsA('Animator')
+                if not animator then return end
+                local speed = tonumber(Options.AnimSpeedInput.Value) or 1.0
+                for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                    pcall(function() track:AdjustSpeed(speed) end)
+                end
+            end)
+            showToast('Anim tweaks ON')
+        else
+            if _G.AnimConn then _G.AnimConn:Disconnect(); _G.AnimConn = nil end
+            local char = plr.Character
+            local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+            local anim = hum  and hum:FindFirstChildWhichIsA('Animator')
+            if anim then
+                for _, track in ipairs(anim:GetPlayingAnimationTracks()) do
+                    pcall(function() track:AdjustSpeed(1) end)
+                end
+            end
+            showToast('Anim tweaks OFF')
+        end
+    end
+})
+
+ESPLeft:AddToggle('HitboxViewer', {
+    Text = 'Hitbox Viewer (players)',
+    Default = false,
+    Callback = function(val)
+        if val then
+            refreshHitboxes()
+            local timer = 0
+            _G.HitboxConn = game:GetService('RunService').Heartbeat:Connect(function()
+                timer += 1
+                if timer >= 60 then timer = 0; refreshHitboxes() end
+            end)
+        else
+            clearHitboxes()
+            if _G.HitboxConn then _G.HitboxConn:Disconnect(); _G.HitboxConn = nil end
+        end
     end
 })
 
@@ -3548,7 +3545,7 @@ do
     local bc = Instance.new('ScreenGui')
     bc.Name           = 'BikeCustGui'
     bc.ResetOnSpawn   = false
-    bc.DisplayOrder   = 997
+    bc.DisplayOrder   = 1001   -- above Linoria's main window (999)
     bc.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     bc.Enabled        = false
     bc.Parent         = CoreGui
