@@ -102,13 +102,19 @@ end
 
 local BIKE_INFO = _discoverBikes()
 
+-- supermoto AND testing place share the original Konstant brand;
+-- every other game is "Konstant Aero" (the universal build)
+local IS_SUPERMOTO = (BIKE_INFO.mode == 'supermoto')
+local IS_KONSTANT  = (BIKE_INFO.mode == 'supermoto' or BIKE_INFO.mode == 'none')
+local BRAND_TITLE  = IS_KONSTANT and 'Konstant' or 'Konstant Aero'
+
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
 local Window = Library:CreateWindow({
-    Title = 'Konstant',
+    Title = BRAND_TITLE,
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -131,42 +137,46 @@ local Left     = Tabs.Main:AddLeftGroupbox('Money')
 local BikeLeft = Tabs.Main:AddLeftGroupbox('Bikes')
 local Right    = Tabs.Main:AddRightGroupbox('Mods')
 
-Left:AddInput('Amount', {
-    Default = '10000',
-    Numeric = true,
-    Finished = false,
-    Text = 'Amount',
-})
+-- money feature is supermoto-specific (uses PurchaseBike remote with the price exploit).
+-- in any other game it's just dead UI, so we don't build it.
+if IS_SUPERMOTO then
+    Left:AddInput('Amount', {
+        Default = '10000',
+        Numeric = true,
+        Finished = false,
+        Text = 'Amount',
+    })
 
-Left:AddDivider()
+    Left:AddDivider()
 
-Left:AddButton({
-    Text = 'Add Money',
-    Func = function()
-        local amount = math.abs(tonumber(Options.Amount.Value) or 0)
-        RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
-            ['Name'] = 'EBOX V2', ['Robux'] = false,
-            ['Speed'] = 40, ['Kind'] = 'E-BIKE',
-            ['ProductID'] = 3585359520, ['Price'] = -amount
-        })
-        playSuccess()
-    end
-})
+    Left:AddButton({
+        Text = 'Add Money',
+        Func = function()
+            local amount = math.abs(tonumber(Options.Amount.Value) or 0)
+            RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
+                ['Name'] = 'EBOX V2', ['Robux'] = false,
+                ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+                ['ProductID'] = 3585359520, ['Price'] = -amount
+            })
+            playSuccess()
+        end
+    })
 
-Left:AddButton({
-    Text = 'Subtract Money',
-    Func = function()
-        local amount = math.abs(tonumber(Options.Amount.Value) or 0)
-        RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
-            ['Name'] = 'EBOX V2', ['Robux'] = false,
-            ['Speed'] = 40, ['Kind'] = 'E-BIKE',
-            ['ProductID'] = 3585359520, ['Price'] = amount
-        })
-        playSuccess()
-    end
-})
+    Left:AddButton({
+        Text = 'Subtract Money',
+        Func = function()
+            local amount = math.abs(tonumber(Options.Amount.Value) or 0)
+            RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
+                ['Name'] = 'EBOX V2', ['Robux'] = false,
+                ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+                ['ProductID'] = 3585359520, ['Price'] = amount
+            })
+            playSuccess()
+        end
+    })
 
-Left:AddDivider()
+    Left:AddDivider()
+end
 
 Left:AddToggle('AntiAdmin', {
     Text = 'Anti-Admin',
@@ -496,45 +506,49 @@ BikeLeft:AddToggle('AutoFixBike', {
 
 BikeLeft:AddDivider()
 
-BikeLeft:AddButton({
-    Text = 'Get All Bikes',
-    Func = function()
-        local bikes = RS.Bikes:GetChildren()
-        local count = 0
-        for _, bike in ipairs(bikes) do
-            if bike:IsA('Model') then
-                RS.Remotes.PurchaseBike:FireServer(bike.Name, {
-                    ['Name'] = bike.Name, ['Robux'] = false,
-                    ['Speed'] = 40, ['Kind'] = 'E-BIKE',
-                    ['ProductID'] = 3585359520, ['Price'] = 0
-                })
-                count += 1
-                task.wait(0.1)
+-- economy buttons rely on PurchaseBike/SellBike remotes which only exist
+-- on the supermoto place. skip them in other games rather than ship dead buttons.
+if IS_SUPERMOTO then
+    BikeLeft:AddButton({
+        Text = 'Get All Bikes',
+        Func = function()
+            local bikes = RS.Bikes:GetChildren()
+            local count = 0
+            for _, bike in ipairs(bikes) do
+                if bike:IsA('Model') then
+                    RS.Remotes.PurchaseBike:FireServer(bike.Name, {
+                        ['Name'] = bike.Name, ['Robux'] = false,
+                        ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+                        ['ProductID'] = 3585359520, ['Price'] = 0
+                    })
+                    count += 1
+                    task.wait(0.1)
+                end
             end
+            playSuccess()
+            showToast('Got all ' .. count .. ' bikes.')
         end
-        playSuccess()
-        showToast('Got all ' .. count .. ' bikes.')
-    end
-})
+    })
 
-BikeLeft:AddButton({
-    Text = 'Sell All Bikes',
-    Func = function()
-        local bikes = RS.Bikes:GetChildren()
-        local count = 0
-        for _, bike in ipairs(bikes) do
-            if bike:IsA('Model') then
-                RS.Remotes.SellBike:FireServer(bike.Name)
-                count += 1
-                task.wait(0.1)
+    BikeLeft:AddButton({
+        Text = 'Sell All Bikes',
+        Func = function()
+            local bikes = RS.Bikes:GetChildren()
+            local count = 0
+            for _, bike in ipairs(bikes) do
+                if bike:IsA('Model') then
+                    RS.Remotes.SellBike:FireServer(bike.Name)
+                    count += 1
+                    task.wait(0.1)
+                end
             end
+            playSuccess()
+            showToast('Sold all ' .. count .. ' bikes.')
         end
-        playSuccess()
-        showToast('Sold all ' .. count .. ' bikes.')
-    end
-})
+    })
 
-BikeLeft:AddDivider()
+    BikeLeft:AddDivider()
+end
 
 BikeLeft:AddInput('SpeedInput', {
     Default = '60',
@@ -5081,7 +5095,8 @@ do
         end
         if n == 0 then showToast('No parts selected') else showToast('Hidden (' .. n .. ' node(s))') end
     end)
-    ppUnhideBtn.MouseButton1Click:Connect(function()
+    -- the actual unhide work, factored out so the confirm popup can call it
+    local function ppDoUnhide()
         local n = 0
         for _, node in ipairs(ppNodeList) do
             if node.selected then
@@ -5102,7 +5117,81 @@ do
             end
         end
         if n == 0 then showToast('No parts selected') else showToast('Unhidden (' .. n .. ' node(s))') end
-    end)
+    end
+
+    -- confirmation modal: prevents accidentally turning every hidden part visible
+    local function ppShowUnhideConfirm()
+        -- count selection up front so we can short-circuit the dialog
+        local sel = 0
+        for _, node in ipairs(ppNodeList) do
+            if node.selected then sel += 1 end
+        end
+        if sel == 0 then showToast('No parts selected'); return end
+
+        local backdrop = Instance.new('Frame')
+        backdrop.Size = UDim2.new(1, 0, 1, 0)
+        backdrop.BackgroundColor3 = Color3.new(0, 0, 0)
+        backdrop.BackgroundTransparency = 0.55
+        backdrop.BorderSizePixel = 0
+        backdrop.ZIndex = 100
+        backdrop.Parent = pp
+
+        local box = Instance.new('Frame')
+        box.Size = UDim2.new(0, 300, 0, 132)
+        box.AnchorPoint = Vector2.new(0.5, 0.5)
+        box.Position = UDim2.new(0.5, 0, 0.5, 0)
+        box.BackgroundColor3 = BG2
+        box.BorderSizePixel = 1
+        box.BorderColor3 = BORDER
+        box.ZIndex = 101
+        box.Parent = backdrop
+
+        local accent = Instance.new('Frame')
+        accent.Size = UDim2.new(1, 0, 0, 2)
+        accent.BackgroundColor3 = ACCENT
+        accent.BorderSizePixel = 0
+        accent.ZIndex = 102
+        accent.Parent = box
+
+        local msg = Instance.new('TextLabel')
+        msg.Size = UDim2.new(1, -20, 0, 68)
+        msg.Position = UDim2.new(0, 10, 0, 12)
+        msg.BackgroundTransparency = 1
+        msg.Text = 'Are you sure you would like to make every part visible?'
+        msg.TextColor3 = TEXT
+        msg.Font = Enum.Font.Gotham
+        msg.TextSize = 13
+        msg.TextWrapped = true
+        msg.TextXAlignment = Enum.TextXAlignment.Center
+        msg.TextYAlignment = Enum.TextYAlignment.Center
+        msg.ZIndex = 102
+        msg.Parent = box
+
+        local function mkBtn(text, xOff, onClick)
+            local b = Instance.new('TextButton')
+            b.Size = UDim2.new(0, 124, 0, 30)
+            b.Position = UDim2.new(0, xOff, 1, -40)
+            b.BackgroundColor3 = BGSUB
+            b.BorderSizePixel = 1
+            b.BorderColor3 = BORDER
+            b.Text = text
+            b.TextColor3 = TEXT
+            b.Font = Enum.Font.Gotham
+            b.TextSize = 12
+            b.ZIndex = 102
+            b.AutoButtonColor = false
+            b.Parent = box
+            b.MouseEnter:Connect(function() b.BorderColor3 = ACCENT end)
+            b.MouseLeave:Connect(function() b.BorderColor3 = BORDER end)
+            b.MouseButton1Click:Connect(onClick)
+            return b
+        end
+
+        mkBtn('Yes',  16,  function() backdrop:Destroy(); ppDoUnhide() end)
+        mkBtn('No',   160, function() backdrop:Destroy() end)
+    end
+
+    ppUnhideBtn.MouseButton1Click:Connect(ppShowUnhideConfirm)
 
     -- expose cleanup so SMCleanup can clear in-game outlines on reload
     _G.PPCleanup = ppClearSelBoxes
