@@ -1527,6 +1527,74 @@ _G.FreecamKeyConn = UIS.InputBegan:Connect(function(input, gp)
     end
 end)
 
+-- ---- Lock Character ---------------------------------------------------
+-- Pairs nicely with Freecam: while flying around, your character stays put.
+-- WASD / jump are sunk via ContextActionService at high priority,
+-- and AutoRotate is killed so the camera can't spin the body.
+Right:AddToggle('LockCharacter', {
+    Text = 'Lock Character',
+    Default = false,
+    Tooltip = 'WASD, jump, and camera-look-rotation are blocked from affecting your character.',
+    Callback = function(val)
+        local CAS = game:GetService('ContextActionService')
+        if val then
+            local function sink() return Enum.ContextActionResult.Sink end
+            pcall(function()
+                CAS:BindActionAtPriority(
+                    'KonstantLockChar',
+                    sink, false,
+                    Enum.ContextActionPriority.High.Value,
+                    Enum.PlayerActions.CharacterForward,
+                    Enum.PlayerActions.CharacterBackward,
+                    Enum.PlayerActions.CharacterLeft,
+                    Enum.PlayerActions.CharacterRight,
+                    Enum.PlayerActions.CharacterJump
+                )
+            end)
+            -- Fallback for forks that don't recognise PlayerActions: bind the raw keys too.
+            pcall(function()
+                CAS:BindActionAtPriority(
+                    'KonstantLockCharKeys',
+                    sink, false,
+                    Enum.ContextActionPriority.High.Value,
+                    Enum.KeyCode.W, Enum.KeyCode.A, Enum.KeyCode.S, Enum.KeyCode.D,
+                    Enum.KeyCode.Space
+                )
+            end)
+
+            -- Kill AutoRotate so the camera can't spin the character body.
+            local function applyLock(char)
+                local hum = char and char:FindFirstChildWhichIsA('Humanoid')
+                if not hum then return end
+                _G.LockCharAutoRotate = hum.AutoRotate  -- remember original on first apply
+                hum.AutoRotate = false
+            end
+            applyLock(plr.Character)
+            _G.LockCharConn = plr.CharacterAdded:Connect(function(char)
+                task.wait(0.2)  -- let Humanoid finish loading
+                applyLock(char)
+            end)
+            showToast('Character locked')
+        else
+            pcall(function() CAS:UnbindAction('KonstantLockChar') end)
+            pcall(function() CAS:UnbindAction('KonstantLockCharKeys') end)
+            if _G.LockCharConn then _G.LockCharConn:Disconnect(); _G.LockCharConn = nil end
+            -- restore AutoRotate (default true if we never captured one)
+            local char = plr.Character
+            local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+            if hum then
+                if _G.LockCharAutoRotate ~= nil then
+                    hum.AutoRotate = _G.LockCharAutoRotate
+                else
+                    hum.AutoRotate = true
+                end
+            end
+            _G.LockCharAutoRotate = nil
+            showToast('Character unlocked')
+        end
+    end
+})
+
 Right:AddDivider()
 
 -- Rainbow Bike moved into the Bike Customization panel.
@@ -5575,7 +5643,7 @@ _G.SMCleanup = function()
                           'AdminESPConn', 'BikeESPConn', 'SpeedTagConn', 'SpeedTagLeaveConn',
                           'PlayerESPConn', 'PlayerESPCharConn',
                           'JumpKeyConn',
-                          'FreecamConn', 'FreecamKeyConn',
+                          'FreecamConn', 'FreecamKeyConn', 'LockCharConn',
                           'StickyConn', 'LockSteeringConn',
                           'MenuToggleConn',
                           'AutoFixScanConn', 'AutoFixSeatConn', 'AutoFixCharConn'}) do
@@ -5588,6 +5656,17 @@ _G.SMCleanup = function()
     -- restore camera + mouse from freecam if it was active on reload
     pcall(function() workspace.CurrentCamera.CameraType = Enum.CameraType.Custom end)
     pcall(function() UIS.MouseBehavior = Enum.MouseBehavior.Default end)
+    -- restore character movement if Lock Character was active on reload
+    pcall(function()
+        local CAS = game:GetService('ContextActionService')
+        CAS:UnbindAction('KonstantLockChar')
+        CAS:UnbindAction('KonstantLockCharKeys')
+    end)
+    pcall(function()
+        local char = plr.Character
+        local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
+        if hum then hum.AutoRotate = true end
+    end)
 
     -- restore world gravity
     pcall(function() workspace.Gravity = 196.2 end)
