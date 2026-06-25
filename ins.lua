@@ -16,6 +16,92 @@ local playSuccess -- defined after gui is created below
 local showToast   -- defined after gui is created below
 local minimapGui  -- defined after gui is created below
 
+-- ============================================================
+-- BIKE DISCOVERY (place-aware)
+-- supermoto place: pull from RS.Bikes/<6 subfolders> + SpawnBike remote
+-- testing place: no spawner at all
+-- any other place: best-effort scan for a Bikes folder + spawn remote
+-- ============================================================
+local PLACE_SUPERMOTO = 74559235274954
+local PLACE_TESTING   = 132909153440126
+local SUPERMOTO_BIKE_FOLDERS = { 'CreatorBikes', 'DirtBikes', 'E-Bikes', 'E-Minis', 'E-Motos', 'Gamepass' }
+local UNIVERSAL_SPAWN_NAMES  = { 'SpawnBike', 'BikeSpawn', 'SpawnVehicle', 'GiveBike', 'CreateBike' }
+local UNIVERSAL_BIKE_FOLDERS = { 'Bikes', 'BikeList', 'Vehicles' }
+
+local function _findFirstByNames(root, names)
+    for _, n in ipairs(names) do
+        local f = root:FindFirstChild(n, true)
+        if f then return f end
+    end
+    return nil
+end
+
+local function _discoverBikes()
+    local id = game.PlaceId
+
+    if id == PLACE_TESTING then
+        return { mode = 'none', bikes = {}, canSpawn = false, spawn = function() end }
+    end
+
+    if id == PLACE_SUPERMOTO then
+        local list = {}
+        local root = RS:FindFirstChild('Bikes')
+        if root then
+            for _, name in ipairs(SUPERMOTO_BIKE_FOLDERS) do
+                local folder = root:FindFirstChild(name)
+                if folder then
+                    for _, v in ipairs(folder:GetChildren()) do
+                        if v:IsA('Model') then table.insert(list, v) end
+                    end
+                end
+            end
+        end
+        local remotes = RS:FindFirstChild('Remotes')
+        local remote  = remotes and remotes:FindFirstChild('SpawnBike')
+        return {
+            mode = 'supermoto',
+            bikes = list,
+            canSpawn = (#list > 0 and remote ~= nil),
+            spawn = function(name)
+                if remote then pcall(function() remote:FireServer(name) end) end
+            end,
+        }
+    end
+
+    -- universal fallback
+    local bikesFolder = _findFirstByNames(RS, UNIVERSAL_BIKE_FOLDERS)
+    local list = {}
+    if bikesFolder then
+        for _, v in ipairs(bikesFolder:GetChildren()) do
+            if v:IsA('Model') then table.insert(list, v) end
+        end
+        if #list == 0 then
+            for _, v in ipairs(bikesFolder:GetDescendants()) do
+                if v:IsA('Model') then table.insert(list, v) end
+            end
+        end
+    end
+
+    local spawnRemote = _findFirstByNames(RS, UNIVERSAL_SPAWN_NAMES)
+    return {
+        mode = 'universal',
+        bikes = list,
+        canSpawn = (#list > 0 and spawnRemote ~= nil),
+        spawn = function(name)
+            if not spawnRemote then return end
+            pcall(function()
+                if spawnRemote:IsA('RemoteEvent') then
+                    spawnRemote:FireServer(name)
+                elseif spawnRemote:IsA('RemoteFunction') then
+                    spawnRemote:InvokeServer(name)
+                end
+            end)
+        end,
+    }
+end
+
+local BIKE_INFO = _discoverBikes()
+
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
@@ -535,12 +621,13 @@ BikeLeft:AddButton({
 
 BikeLeft:AddDivider()
 
-BikeLeft:AddToggle('SpawnerToggle', {
-    Text = 'Toggle Spawner',
-    Default = false,
-})
-
-BikeLeft:AddDivider()
+if BIKE_INFO.canSpawn then
+    BikeLeft:AddToggle('SpawnerToggle', {
+        Text = 'Toggle Spawner',
+        Default = false,
+    })
+    BikeLeft:AddDivider()
+end
 
 local clonedBikes = {}
 
@@ -600,6 +687,13 @@ BikeLeft:AddInput('BrakeInput', {
     Text = 'Brake Force (mph/s)',
 })
 
+BikeLeft:AddInput('ReverseMultInput', {
+    Default = '0.4',
+    Numeric = true,
+    Finished = false,
+    Text = 'Reverse Mult',
+})
+
 BikeLeft:AddButton({
     Text = 'Unpatch Brake',
     Func = function()
@@ -651,13 +745,33 @@ BikeLeft:AddButton({
             end
             local vel     = root.AssemblyLinearVelocity
             local flatVel = Vector3.new(vel.X, 0, vel.Z)
-            local mag     = flatVel.Magnitude
-            if mag > 0.1 then
-                local reduction = math.min(mag, brakeDecel * dt)
-                local newFlat   = flatVel - flatVel.Unit * reduction
+            local fwd     = root.CFrame.LookVector
+            local flatFwd = Vector3.new(fwd.X, 0, fwd.Z)
+            if flatFwd.Magnitude < 0.01 then return end
+            flatFwd = flatFwd.Unit
+            -- signed projection: positive = moving forward, negative = already reversing
+            local forwardSpeed = flatVel:Dot(flatFwd)
+
+            local revMult     = tonumber(Options.ReverseMultInput.Value) or 0.4
+            local revAccel    = brakeDecel * revMult     -- studs/s² when reversing
+            local revMaxStuds = 40 * revMult              -- reverse speed cap (~16 mph at default 0.4)
+
+            if forwardSpeed > 2 then
+                -- still moving forward: pure brake along forward axis
+                local reduction = math.min(forwardSpeed, brakeDecel * dt)
+                local newFlat   = flatVel - flatFwd * reduction
                 root.AssemblyLinearVelocity = Vector3.new(newFlat.X, vel.Y, newFlat.Z)
             else
-                root.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
+                -- crawling, stopped, or already reversing: push backwards up to cap
+                local currentRev = -forwardSpeed  -- positive when moving backwards
+                if currentRev < revMaxStuds then
+                    local addition = revAccel * dt
+                    root.AssemblyLinearVelocity = Vector3.new(
+                        vel.X - flatFwd.X * addition,
+                        vel.Y,
+                        vel.Z - flatFwd.Z * addition
+                    )
+                end
             end
         end)
 
@@ -1606,8 +1720,10 @@ local MAP_SLOTS = {
 -- in any other game only Clone + Export are available: grab that game's map, save it to
 -- your PC via the executor file system, then import it next time you're in the supermoto game.
 local TARGET_GAME_ID = 74559235274954
-if game.PlaceId ~= TARGET_GAME_ID then return end
-local isTargetGame = true
+-- do NOT early-return on wrong game. the rest of the script (showToast,
+-- ESP, Mods, Customization, SMCleanup, etc.) is universal and must load
+-- in every game. only the supermoto-specific Maps block below is gated.
+local isTargetGame = (game.PlaceId == TARGET_GAME_ID)
 
 local MAP_SAVE_FOLDER = 'SuperMotoMaps'
 
@@ -2927,7 +3043,9 @@ showToast = function(text)
     end)
 end
 
--- spawner window
+-- spawner window (only built when current place exposes spawnable bikes)
+if BIKE_INFO.canSpawn then
+
 local spawnerFrame = Instance.new('Frame')
 spawnerFrame.Size = UDim2.new(0, 440, 0, 520)
 spawnerFrame.Position = UDim2.new(0.5, 20, 0.5, -260)
@@ -2989,13 +3107,13 @@ gridPad.PaddingTop = UDim.new(0, 4)
 gridPad.PaddingBottom = UDim.new(0, 4)
 gridPad.Parent = scroll
 
-local bikeList = {}
-for _, v in ipairs(RS.Bikes:GetChildren()) do
-    if v:IsA('Model') then
-        table.insert(bikeList, v)
-    end
-end
+local bikeList = BIKE_INFO.bikes
 scroll.CanvasSize = UDim2.new(0, 0, 0, math.ceil(#bikeList / 3) * 154 + 8)
+
+-- lazy population: ViewportFrame contents (bike clone + camera) are heavy.
+-- defer them to first toggle-open so script load + opening the panel stay snappy.
+local spawnerPopulated = false
+local spawnerPopulateFns = {}
 
 for _, bike in ipairs(bikeList) do
     local card = Instance.new('TextButton')
@@ -3014,26 +3132,29 @@ for _, bike in ipairs(bikeList) do
     vpf.ZIndex = 13
     vpf.Parent = card
 
-    local wm = Instance.new('WorldModel')
-    wm.Parent = vpf
-    local cam = Instance.new('Camera')
-    vpf.CurrentCamera = cam
-    cam.Parent = vpf
+    -- defer the clone-into-vpf work; the empty card is cheap, the clone is not
+    table.insert(spawnerPopulateFns, function()
+        local wm = Instance.new('WorldModel')
+        wm.Parent = vpf
+        local cam = Instance.new('Camera')
+        vpf.CurrentCamera = cam
+        cam.Parent = vpf
 
-    local ok, clone = pcall(function() return bike:Clone() end)
-    if ok and clone then
-        clone.Parent = wm
-        local cok, cf, size = pcall(function()
-            return clone:GetBoundingBox()
-        end)
-        if cok and cf then
-            local dist = math.max(size.X, size.Y, size.Z) * 1.4
-            cam.CFrame = CFrame.lookAt(
-                cf.Position + Vector3.new(dist, dist * 0.4, dist),
-                cf.Position
-            )
+        local ok, clone = pcall(function() return bike:Clone() end)
+        if ok and clone then
+            clone.Parent = wm
+            local cok, cf, size = pcall(function()
+                return clone:GetBoundingBox()
+            end)
+            if cok and cf then
+                local dist = math.max(size.X, size.Y, size.Z) * 1.4
+                cam.CFrame = CFrame.lookAt(
+                    cf.Position + Vector3.new(dist, dist * 0.4, dist),
+                    cf.Position
+                )
+            end
         end
-    end
+    end)
 
     local sep = Instance.new('Frame')
     sep.Size = UDim2.new(1, 0, 0, 1)
@@ -3070,7 +3191,7 @@ for _, bike in ipairs(bikeList) do
         TweenService:Create(card, TweenInfo.new(0.08), { BackgroundColor3 = BGSUB }):Play()
     end)
     card.MouseButton1Click:Connect(function()
-        RS.Remotes.SpawnBike:FireServer(bike.Name)
+        BIKE_INFO.spawn(bike.Name)
         showToast('Spawned ' .. bike.Name)
     end)
 end
@@ -3093,8 +3214,20 @@ UIS.InputChanged:Connect(function(inp)
     end
 end)
 
+local function populateSpawner()
+    if spawnerPopulated then return end
+    spawnerPopulated = true
+    task.spawn(function()
+        for i, fn in ipairs(spawnerPopulateFns) do
+            pcall(fn)
+            if i % 3 == 0 then task.wait() end
+        end
+    end)
+end
+
 Toggles.SpawnerToggle:OnChanged(function()
     spawnerFrame.Visible = Toggles.SpawnerToggle.Value
+    if Toggles.SpawnerToggle.Value then populateSpawner() end
 end)
 
 -- keybind (change hideKey to whatever you want)
@@ -3108,6 +3241,8 @@ UIS.InputBegan:Connect(function(inp, gp)
         Toggles.SpawnerToggle:SetValue(false)
     end
 end)
+
+end -- if BIKE_INFO.canSpawn
 
 -- ============================================================
 -- TRAIL SETTINGS PANEL
