@@ -6,6 +6,14 @@ local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local plr = Players.LocalPlayer
 
+-- mph <-> studs/s conversion constants.
+-- derivation: 1 stud ≈ 0.28 m (Roblox convention), 1 mph = 0.44704 m/s,
+--             therefore 1 mph = 0.44704 / 0.28 ≈ 1.5966 studs/s.
+-- using the precise value rather than the rounded 1.6 so the menu's
+-- mph readouts line up with the in-game speedometer (~0.2% off otherwise).
+local MPH_TO_STUDS = 1.5966
+local STUDS_TO_MPH = 0.6264
+
 -- deduplication guard: if a previous instance is running, clean it up first
 if _G.SMCleanup then
     pcall(_G.SMCleanup)
@@ -605,8 +613,8 @@ BikeLeft:AddButton({
         local root     = seat.Parent:FindFirstChildWhichIsA('BasePart')
         local mph      = tonumber(Options.SpeedInput.Value) or 60
         local accelMph = tonumber(Options.AccelInput.Value) or 37
-        local maxSpeed = mph * 1.6       -- studs/s
-        local accel    = accelMph * 1.6  -- studs/s²
+        local maxSpeed = mph * MPH_TO_STUDS       -- studs/s
+        local accel    = accelMph * MPH_TO_STUDS  -- studs/s²
 
         _G.SpeedConn = RS2.Heartbeat:Connect(function(dt)
             if not UIS:IsKeyDown(Enum.KeyCode.W) then return end
@@ -701,11 +709,11 @@ BikeLeft:AddInput('BrakeInput', {
     Text = 'Brake Force (mph/s)',
 })
 
-BikeLeft:AddInput('ReverseMultInput', {
-    Default = '0.4',
+BikeLeft:AddInput('ReverseInput', {
+    Default = '50',
     Numeric = true,
     Finished = false,
-    Text = 'Reverse Mult',
+    Text = 'Reverse Force (mph/s)',
 })
 
 BikeLeft:AddButton({
@@ -748,7 +756,7 @@ BikeLeft:AddButton({
 
         local root       = seat.Parent:FindFirstChildWhichIsA('BasePart')
         local brakeMph   = tonumber(Options.BrakeInput.Value) or 120
-        local brakeDecel = brakeMph * 1.6  -- studs/s²
+        local brakeDecel = brakeMph * MPH_TO_STUDS  -- studs/s²
 
         _G.BrakeConn = RS2.Heartbeat:Connect(function(dt)
             if not UIS:IsKeyDown(Enum.KeyCode.S) then return end
@@ -766,9 +774,12 @@ BikeLeft:AddButton({
             -- signed projection: positive = moving forward, negative = already reversing
             local forwardSpeed = flatVel:Dot(flatFwd)
 
-            local revMult     = tonumber(Options.ReverseMultInput.Value) or 0.4
-            local revAccel    = brakeDecel * revMult     -- studs/s² when reversing
-            local revMaxStuds = 40 * revMult              -- reverse speed cap (~16 mph at default 0.4)
+            -- reverse is its own independent force, not derived from brake.
+            -- cap scales with the force so a stronger reverse also tops out higher
+            -- (default 50 mph/s → ~20 mph reverse cap).
+            local revMph      = tonumber(Options.ReverseInput.Value) or 50
+            local revAccel    = revMph * MPH_TO_STUDS              -- studs/s² when reversing
+            local revMaxStuds = (revMph * 0.4) * MPH_TO_STUDS      -- reverse top speed cap (studs/s)
 
             if forwardSpeed > 2 then
                 -- still moving forward: pure brake along forward axis
@@ -1202,7 +1213,7 @@ Right:AddToggle('FlyMode', {
                 local seat = hum.SeatPart
                 if not seat then return end
                 local cam   = workspace.CurrentCamera
-                local speed = (tonumber(Options.FlySpeedInput.Value) or 60) * 1.6
+                local speed = (tonumber(Options.FlySpeedInput.Value) or 60) * MPH_TO_STUDS
                 local fwd   = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
                 if fwd.Magnitude > 0.001 then fwd = fwd.Unit end
                 local right = cam.CFrame.RightVector
@@ -2876,7 +2887,7 @@ ESPLeft:AddToggle('SpeedNametags', {
                         speedTagMap[p.UserId] = nil
                         continue
                     end
-                    local mph = math.floor(data.hrp.AssemblyLinearVelocity.Magnitude * 0.625 + 0.5)
+                    local mph = math.floor(data.hrp.AssemblyLinearVelocity.Magnitude * STUDS_TO_MPH + 0.5)
                     data.label.Text = p.Name .. ' -- ' .. mph .. ' mph'
                 end
             end)
