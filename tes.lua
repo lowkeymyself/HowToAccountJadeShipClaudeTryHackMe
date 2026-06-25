@@ -132,8 +132,26 @@ pcall(function()
     Library.ScreenGui.DisplayOrder = 999
     Library.ScreenGui.Parent = CoreGui
 end)
--- menu toggle key: Delete (was RightControl by default)
+-- menu toggle key: Delete (override Linoria's default RightControl)
+-- Linoria forks use different property names; set every known variant.
 pcall(function() Library.ToggleKeybind = Enum.KeyCode.Delete end)
+pcall(function() Library.ToggleKey     = Enum.KeyCode.Delete end)
+pcall(function() Library.MenuKeybind   = Enum.KeyCode.Delete end)
+-- Also bind a direct UIS listener that flips the menu state both ways.
+_G.MenuToggleConn = UIS.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode ~= Enum.KeyCode.Delete then return end
+    -- Try every documented toggle path; first one that exists wins.
+    if not pcall(function() Library:Toggle() end) then
+        if not pcall(function() Library.Toggled = not Library.Toggled end) then
+            pcall(function()
+                if Library.ScreenGui then
+                    Library.ScreenGui.Enabled = not Library.ScreenGui.Enabled
+                end
+            end)
+        end
+    end
+end)
 
 local Tabs = {
     Main     = Window:AddTab('Main'),
@@ -142,7 +160,7 @@ local Tabs = {
     Settings = Window:AddTab('Settings')
 }
 
-local Left     = Tabs.Main:AddLeftGroupbox('Money')
+local Left     = Tabs.Main:AddLeftGroupbox('Visual')
 local BikeLeft = Tabs.Main:AddLeftGroupbox('Bikes')
 local Right    = Tabs.Main:AddRightGroupbox('Mods')
 
@@ -551,6 +569,11 @@ BikeLeft:AddButton({
                 _G.SpeedConn = nil
                 return
             end
+            -- Seated-only gate: bail if player is not on a VehicleSeat
+            local char2 = plr.Character
+            local hum2  = char2 and char2:FindFirstChildWhichIsA('Humanoid')
+            local seat2 = hum2 and hum2.SeatPart
+            if not seat2 or not seat2:IsA('VehicleSeat') then return end
             -- Ground-only gate
             if Toggles.GroundOnly and Toggles.GroundOnly.Value then
                 local rp = RaycastParams.new()
@@ -702,6 +725,11 @@ BikeLeft:AddButton({
                 _G.BrakeConn = nil
                 return
             end
+            -- Seated-only gate: bail if player is not on a VehicleSeat
+            local char2 = plr.Character
+            local hum2  = char2 and char2:FindFirstChildWhichIsA('Humanoid')
+            local seat2 = hum2 and hum2.SeatPart
+            if not seat2 or not seat2:IsA('VehicleSeat') then return end
             -- Ground-only gate (applies to both brake and reverse paths below)
             if Toggles.GroundOnly and Toggles.GroundOnly.Value then
                 local rp = RaycastParams.new()
@@ -3954,6 +3982,40 @@ do
     end
 
     -- ================================================================
+    -- RAINBOW
+    -- ================================================================
+    do
+        bcSecHdr('RAINBOW')
+        local r0 = bcRow(34); bcLbl(r0,'Speed:',8,5,60,20)
+        local spInp = bcInp(r0,'0.4',74,4,58,22)
+        local r1 = bcRow(34); bcLbl(r1,'Rainbow Cycle:',8,5,110,20)
+        togBtns.rb = bcTog(r1,120,4)
+        togBtns.rb.MouseButton1Click:Connect(function()
+            togState.rb = not togState.rb
+            if togState.rb then
+                bcTogOn(togBtns.rb)
+                local hue = 0
+                _G.RainbowOn = true
+                if _G.RainbowConn then _G.RainbowConn:Disconnect() end
+                _G.RainbowConn = RunService.Heartbeat:Connect(function(dt)
+                    local model = getTargetModel()
+                    if not model then return end
+                    local speed = tonumber(spInp.Text) or 0.4
+                    hue = (hue + dt * speed) % 1
+                    local col = Color3.fromHSV(hue, 1, 1)
+                    for _, p in ipairs(model:GetDescendants()) do
+                        if p:IsA('BasePart') then pcall(function() p.Color = col end) end
+                    end
+                end)
+            else
+                bcTogOff(togBtns.rb)
+                _G.RainbowOn = false
+                if _G.RainbowConn then _G.RainbowConn:Disconnect(); _G.RainbowConn = nil end
+            end
+        end)
+    end
+
+    -- ================================================================
     -- RESET
     -- ================================================================
     do
@@ -3976,6 +4038,9 @@ do
                 end
             end
             effInst.headlight=nil; effInst.spotlights={}
+            -- kill rainbow heartbeat if active
+            _G.RainbowOn = false
+            if _G.RainbowConn then _G.RainbowConn:Disconnect(); _G.RainbowConn = nil end
             for k in pairs(togState) do togState[k]=false end
             togState.shad=true
             for _, btn in pairs(togBtns) do pcall(bcTogOff,btn) end
