@@ -16,13 +16,105 @@ local playSuccess -- defined after gui is created below
 local showToast   -- defined after gui is created below
 local minimapGui  -- defined after gui is created below
 
+-- ============================================================
+-- BIKE DISCOVERY (place-aware)
+-- supermoto place: pull from RS.Bikes/<6 subfolders> + SpawnBike remote
+-- testing place: no spawner at all
+-- any other place: best-effort scan for a Bikes folder + spawn remote
+-- ============================================================
+local PLACE_SUPERMOTO = 74559235274954
+local PLACE_TESTING   = 132909153440126
+local SUPERMOTO_BIKE_FOLDERS = { 'CreatorBikes', 'DirtBikes', 'E-Bikes', 'E-Minis', 'E-Motos', 'Gamepass' }
+local UNIVERSAL_SPAWN_NAMES  = { 'SpawnBike', 'BikeSpawn', 'SpawnVehicle', 'GiveBike', 'CreateBike' }
+local UNIVERSAL_BIKE_FOLDERS = { 'Bikes', 'BikeList', 'Vehicles' }
+
+local function _findFirstByNames(root, names)
+    for _, n in ipairs(names) do
+        local f = root:FindFirstChild(n, true)
+        if f then return f end
+    end
+    return nil
+end
+
+local function _discoverBikes()
+    local id = game.PlaceId
+
+    if id == PLACE_TESTING then
+        return { mode = 'none', bikes = {}, canSpawn = false, spawn = function() end }
+    end
+
+    if id == PLACE_SUPERMOTO then
+        local list = {}
+        local root = RS:FindFirstChild('Bikes')
+        if root then
+            for _, name in ipairs(SUPERMOTO_BIKE_FOLDERS) do
+                local folder = root:FindFirstChild(name)
+                if folder then
+                    for _, v in ipairs(folder:GetChildren()) do
+                        if v:IsA('Model') then table.insert(list, v) end
+                    end
+                end
+            end
+        end
+        local remotes = RS:FindFirstChild('Remotes')
+        local remote  = remotes and remotes:FindFirstChild('SpawnBike')
+        return {
+            mode = 'supermoto',
+            bikes = list,
+            canSpawn = (#list > 0 and remote ~= nil),
+            spawn = function(name)
+                if remote then pcall(function() remote:FireServer(name) end) end
+            end,
+        }
+    end
+
+    -- universal fallback
+    local bikesFolder = _findFirstByNames(RS, UNIVERSAL_BIKE_FOLDERS)
+    local list = {}
+    if bikesFolder then
+        for _, v in ipairs(bikesFolder:GetChildren()) do
+            if v:IsA('Model') then table.insert(list, v) end
+        end
+        if #list == 0 then
+            for _, v in ipairs(bikesFolder:GetDescendants()) do
+                if v:IsA('Model') then table.insert(list, v) end
+            end
+        end
+    end
+
+    local spawnRemote = _findFirstByNames(RS, UNIVERSAL_SPAWN_NAMES)
+    return {
+        mode = 'universal',
+        bikes = list,
+        canSpawn = (#list > 0 and spawnRemote ~= nil),
+        spawn = function(name)
+            if not spawnRemote then return end
+            pcall(function()
+                if spawnRemote:IsA('RemoteEvent') then
+                    spawnRemote:FireServer(name)
+                elseif spawnRemote:IsA('RemoteFunction') then
+                    spawnRemote:InvokeServer(name)
+                end
+            end)
+        end,
+    }
+end
+
+local BIKE_INFO = _discoverBikes()
+
+-- supermoto AND testing place share the original Konstant brand;
+-- every other game is "Konstant Aero" (the universal build)
+local IS_SUPERMOTO = (BIKE_INFO.mode == 'supermoto')
+local IS_KONSTANT  = (BIKE_INFO.mode == 'supermoto' or BIKE_INFO.mode == 'none')
+local BRAND_TITLE  = IS_KONSTANT and 'Konstant' or 'Konstant Aero'
+
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
 local Window = Library:CreateWindow({
-    Title = 'Konstant',
+    Title = BRAND_TITLE,
     Center = true,
     AutoShow = true,
     TabPadding = 8,
@@ -45,42 +137,46 @@ local Left     = Tabs.Main:AddLeftGroupbox('Money')
 local BikeLeft = Tabs.Main:AddLeftGroupbox('Bikes')
 local Right    = Tabs.Main:AddRightGroupbox('Mods')
 
-Left:AddInput('Amount', {
-    Default = '10000',
-    Numeric = true,
-    Finished = false,
-    Text = 'Amount',
-})
+-- money feature is supermoto-specific (uses PurchaseBike remote with the price exploit).
+-- in any other game it's just dead UI, so we don't build it.
+if IS_SUPERMOTO then
+    Left:AddInput('Amount', {
+        Default = '10000',
+        Numeric = true,
+        Finished = false,
+        Text = 'Amount',
+    })
 
-Left:AddDivider()
+    Left:AddDivider()
 
-Left:AddButton({
-    Text = 'Add Money',
-    Func = function()
-        local amount = math.abs(tonumber(Options.Amount.Value) or 0)
-        RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
-            ['Name'] = 'EBOX V2', ['Robux'] = false,
-            ['Speed'] = 40, ['Kind'] = 'E-BIKE',
-            ['ProductID'] = 3585359520, ['Price'] = -amount
-        })
-        playSuccess()
-    end
-})
+    Left:AddButton({
+        Text = 'Add Money',
+        Func = function()
+            local amount = math.abs(tonumber(Options.Amount.Value) or 0)
+            RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
+                ['Name'] = 'EBOX V2', ['Robux'] = false,
+                ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+                ['ProductID'] = 3585359520, ['Price'] = -amount
+            })
+            playSuccess()
+        end
+    })
 
-Left:AddButton({
-    Text = 'Subtract Money',
-    Func = function()
-        local amount = math.abs(tonumber(Options.Amount.Value) or 0)
-        RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
-            ['Name'] = 'EBOX V2', ['Robux'] = false,
-            ['Speed'] = 40, ['Kind'] = 'E-BIKE',
-            ['ProductID'] = 3585359520, ['Price'] = amount
-        })
-        playSuccess()
-    end
-})
+    Left:AddButton({
+        Text = 'Subtract Money',
+        Func = function()
+            local amount = math.abs(tonumber(Options.Amount.Value) or 0)
+            RS.Remotes.PurchaseBike:FireServer('EBOX V2', {
+                ['Name'] = 'EBOX V2', ['Robux'] = false,
+                ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+                ['ProductID'] = 3585359520, ['Price'] = amount
+            })
+            playSuccess()
+        end
+    })
 
-Left:AddDivider()
+    Left:AddDivider()
+end
 
 Left:AddToggle('AntiAdmin', {
     Text = 'Anti-Admin',
@@ -410,89 +506,49 @@ BikeLeft:AddToggle('AutoFixBike', {
 
 BikeLeft:AddDivider()
 
-BikeLeft:AddToggle('AutoLand', {
-    Text    = 'Auto-land',
-    Default = false,
-    Callback = function(val)
-        if val then
-            local rayParams = RaycastParams.new()
-            rayParams.FilterType = Enum.RaycastFilterType.Exclude
-
-            _G.AutoLandConn = RunService.Heartbeat:Connect(function()
-                local char = plr.Character
-                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
-                if not hum then return end
-                local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
-
-                rayParams.FilterDescendantsInstances = {seat.Parent, char}
-
-                local origin = seat.Position
-                local result = workspace:Raycast(origin, Vector3.new(0, -8, 0), rayParams)
-                if not result then return end  -- too high up, do nothing
-
-                local dist = (origin - result.Position).Magnitude
-                if dist < 2 then return end  -- on/near ground already, don't fight landing physics
-
-                -- approaching landing (2-8 studs): lerp toward upright, stronger as ground gets closer
-                local alpha = math.clamp((8 - dist) / 6 * 0.3, 0.02, 0.3)
-
-                local lv      = seat.CFrame.LookVector
-                local flatFwd = Vector3.new(lv.X, 0, lv.Z)
-                if flatFwd.Magnitude < 0.01 then return end
-                flatFwd = flatFwd.Unit
-                local right     = flatFwd:Cross(Vector3.new(0, -1, 0)).Unit
-                local up        = right:Cross(flatFwd).Unit
-                local uprightCF = CFrame.fromMatrix(seat.Position, right, up)
-                pcall(function() seat.CFrame = seat.CFrame:Lerp(uprightCF, alpha) end)
-            end)
-            showToast('Auto-land ON')
-        else
-            if _G.AutoLandConn then _G.AutoLandConn:Disconnect(); _G.AutoLandConn = nil end
-            showToast('Auto-land OFF')
-        end
-    end
-})
-
-BikeLeft:AddButton({
-    Text = 'Get All Bikes',
-    Func = function()
-        local bikes = RS.Bikes:GetChildren()
-        local count = 0
-        for _, bike in ipairs(bikes) do
-            if bike:IsA('Model') then
-                RS.Remotes.PurchaseBike:FireServer(bike.Name, {
-                    ['Name'] = bike.Name, ['Robux'] = false,
-                    ['Speed'] = 40, ['Kind'] = 'E-BIKE',
-                    ['ProductID'] = 3585359520, ['Price'] = 0
-                })
-                count += 1
-                task.wait(0.1)
+-- economy buttons rely on PurchaseBike/SellBike remotes which only exist
+-- on the supermoto place. skip them in other games rather than ship dead buttons.
+if IS_SUPERMOTO then
+    BikeLeft:AddButton({
+        Text = 'Get All Bikes',
+        Func = function()
+            local bikes = RS.Bikes:GetChildren()
+            local count = 0
+            for _, bike in ipairs(bikes) do
+                if bike:IsA('Model') then
+                    RS.Remotes.PurchaseBike:FireServer(bike.Name, {
+                        ['Name'] = bike.Name, ['Robux'] = false,
+                        ['Speed'] = 40, ['Kind'] = 'E-BIKE',
+                        ['ProductID'] = 3585359520, ['Price'] = 0
+                    })
+                    count += 1
+                    task.wait(0.1)
+                end
             end
+            playSuccess()
+            showToast('Got all ' .. count .. ' bikes.')
         end
-        playSuccess()
-        showToast('Got all ' .. count .. ' bikes.')
-    end
-})
+    })
 
-BikeLeft:AddButton({
-    Text = 'Sell All Bikes',
-    Func = function()
-        local bikes = RS.Bikes:GetChildren()
-        local count = 0
-        for _, bike in ipairs(bikes) do
-            if bike:IsA('Model') then
-                RS.Remotes.SellBike:FireServer(bike.Name)
-                count += 1
-                task.wait(0.1)
+    BikeLeft:AddButton({
+        Text = 'Sell All Bikes',
+        Func = function()
+            local bikes = RS.Bikes:GetChildren()
+            local count = 0
+            for _, bike in ipairs(bikes) do
+                if bike:IsA('Model') then
+                    RS.Remotes.SellBike:FireServer(bike.Name)
+                    count += 1
+                    task.wait(0.1)
+                end
             end
+            playSuccess()
+            showToast('Sold all ' .. count .. ' bikes.')
         end
-        playSuccess()
-        showToast('Sold all ' .. count .. ' bikes.')
-    end
-})
+    })
 
-BikeLeft:AddDivider()
+    BikeLeft:AddDivider()
+end
 
 BikeLeft:AddInput('SpeedInput', {
     Default = '60',
@@ -579,12 +635,13 @@ BikeLeft:AddButton({
 
 BikeLeft:AddDivider()
 
-BikeLeft:AddToggle('SpawnerToggle', {
-    Text = 'Toggle Spawner',
-    Default = false,
-})
-
-BikeLeft:AddDivider()
+if BIKE_INFO.canSpawn then
+    BikeLeft:AddToggle('SpawnerToggle', {
+        Text = 'Toggle Spawner',
+        Default = false,
+    })
+    BikeLeft:AddDivider()
+end
 
 local clonedBikes = {}
 
@@ -644,6 +701,13 @@ BikeLeft:AddInput('BrakeInput', {
     Text = 'Brake Force (mph/s)',
 })
 
+BikeLeft:AddInput('ReverseMultInput', {
+    Default = '0.4',
+    Numeric = true,
+    Finished = false,
+    Text = 'Reverse Mult',
+})
+
 BikeLeft:AddButton({
     Text = 'Unpatch Brake',
     Func = function()
@@ -695,13 +759,33 @@ BikeLeft:AddButton({
             end
             local vel     = root.AssemblyLinearVelocity
             local flatVel = Vector3.new(vel.X, 0, vel.Z)
-            local mag     = flatVel.Magnitude
-            if mag > 0.1 then
-                local reduction = math.min(mag, brakeDecel * dt)
-                local newFlat   = flatVel - flatVel.Unit * reduction
+            local fwd     = root.CFrame.LookVector
+            local flatFwd = Vector3.new(fwd.X, 0, fwd.Z)
+            if flatFwd.Magnitude < 0.01 then return end
+            flatFwd = flatFwd.Unit
+            -- signed projection: positive = moving forward, negative = already reversing
+            local forwardSpeed = flatVel:Dot(flatFwd)
+
+            local revMult     = tonumber(Options.ReverseMultInput.Value) or 0.4
+            local revAccel    = brakeDecel * revMult     -- studs/s² when reversing
+            local revMaxStuds = 40 * revMult              -- reverse speed cap (~16 mph at default 0.4)
+
+            if forwardSpeed > 2 then
+                -- still moving forward: pure brake along forward axis
+                local reduction = math.min(forwardSpeed, brakeDecel * dt)
+                local newFlat   = flatVel - flatFwd * reduction
                 root.AssemblyLinearVelocity = Vector3.new(newFlat.X, vel.Y, newFlat.Z)
             else
-                root.AssemblyLinearVelocity = Vector3.new(0, vel.Y, 0)
+                -- crawling, stopped, or already reversing: push backwards up to cap
+                local currentRev = -forwardSpeed  -- positive when moving backwards
+                if currentRev < revMaxStuds then
+                    local addition = revAccel * dt
+                    root.AssemblyLinearVelocity = Vector3.new(
+                        vel.X - flatFwd.X * addition,
+                        vel.Y,
+                        vel.Z - flatFwd.Z * addition
+                    )
+                end
             end
         end)
 
@@ -1047,42 +1131,19 @@ BikeLeft:AddButton({
     end
 })
 
+-- trail settings shared between the toggle and the settings panel
+local trailSettings = {
+    startR = 255, startG = 215, startB = 0,
+    endR   = 200, endG   = 100, endB   = 0,
+    lifetime      = 0.6,
+    halfWidth     = 0.5,
+    textureId     = '',
+    lightEmission = 0.5,
+    rainbow       = false,
+}
+local trailGui    = nil  -- assigned when trail panel is built below
 local bikeCustGui   = nil  -- assigned when bike customization panel is built below
 local partPickerGui = nil  -- assigned when part picker panel is built below
-local underglowParts = {}
-
--- ---- Nitro HUD ---------------------------------------------------------
-local nitroGui = nil
-local nitroBg  = nil
-local nitroBar = nil
-do
-    local ng = Instance.new('ScreenGui')
-    ng.Name           = 'NitroGui'
-    ng.ResetOnSpawn   = false
-    ng.DisplayOrder   = 997
-    ng.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    ng.Parent         = CoreGui
-    nitroGui = ng
-
-    local bg = Instance.new('Frame')
-    bg.Name             = 'NitroBg'
-    bg.Size             = UDim2.new(0, 220, 0, 8)
-    bg.Position         = UDim2.new(0.5, -110, 1, -48)
-    bg.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-    bg.BorderSizePixel  = 1
-    bg.BorderColor3     = Color3.fromRGB(60, 60, 60)
-    bg.Visible          = false
-    bg.Parent           = ng
-    nitroBg = bg
-
-    local bar = Instance.new('Frame')
-    bar.Name             = 'NitroBar'
-    bar.Size             = UDim2.new(1, 0, 1, 0)
-    bar.BackgroundColor3 = Color3.fromRGB(80, 180, 255)
-    bar.BorderSizePixel  = 0
-    bar.Parent           = bg
-    nitroBar = bar
-end
 
 Right:AddDivider()
 
@@ -1413,203 +1474,77 @@ Right:AddButton({
 
 Right:AddDivider()
 
--- ---- Nitro Burst -------------------------------------------------------
-Right:AddInput('NitroKeyInput', {
-    Default  = 'F',
-    Numeric  = false,
-    Finished = false,
-    Text     = 'Nitro Key',
-})
-
-Right:AddInput('NitroDurationInput', {
-    Default  = '1.5',
-    Numeric  = true,
-    Finished = false,
-    Text     = 'Nitro Duration (s)',
-})
-
-Right:AddInput('NitroMaxSpeedInput', {
-    Default  = '120',
-    Numeric  = true,
-    Finished = false,
-    Text     = 'Nitro Max Speed (studs/s)',
-})
-
-Right:AddInput('NitroCooldownInput', {
-    Default  = '5',
-    Numeric  = true,
-    Finished = false,
-    Text     = 'Nitro Cooldown (s)',
-})
-
-Right:AddToggle('NitroBurst', {
-    Text    = 'Nitro Burst',
+-- ---- Bike Trail --------------------------------------------------------
+Right:AddToggle('BikeTrail', {
+    Text = 'Bike Trail',
     Default = false,
     Callback = function(val)
         if val then
-            local nitroActive      = false
-            local nitroEndTime     = 0
-            local nitroCooldownEnd = 0
-
-            _G.NitroKeyConn = UIS.InputBegan:Connect(function(inp, gp)
-                if gp then return end
-                if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
-                local keyStr = (Options.NitroKeyInput.Value or 'F'):upper():gsub('%s+', '')
-                local ok, kc = pcall(function() return Enum.KeyCode[keyStr] end)
-                if not ok or kc == nil or inp.KeyCode ~= kc then return end
-                local now = tick()
-                if nitroActive or now < nitroCooldownEnd then return end
-                local dur = tonumber(Options.NitroDurationInput.Value) or 1.5
-                nitroActive    = true
-                nitroEndTime   = now + dur
-                nitroBg.Visible = true
-                nitroBar.BackgroundColor3 = Color3.fromRGB(80, 180, 255)
-            end)
-
-            _G.NitroConn = RunService.Heartbeat:Connect(function(dt)
-                local now    = tick()
-                local dur    = tonumber(Options.NitroDurationInput.Value)  or 1.5
-                local cool   = tonumber(Options.NitroCooldownInput.Value)  or 5
-                local maxSpd = tonumber(Options.NitroMaxSpeedInput.Value) or 120
-
-                if nitroActive then
-                    local t = math.clamp((nitroEndTime - now) / dur, 0, 1)
-                    nitroBar.Size             = UDim2.new(t, 0, 1, 0)
-                    nitroBar.BackgroundColor3 = Color3.fromRGB(80, 180, 255)
-                    if now >= nitroEndTime then
-                        nitroActive      = false
-                        nitroCooldownEnd = now + cool
+            local _, bikeRoot = getBikeRoot()
+            if not bikeRoot then showToast('Get on a bike first') return end
+            pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy() end end)
+            pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy() end end)
+            pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy()  end end)
+            local hw = math.max(0.05, trailSettings.halfWidth)
+            local a0 = Instance.new('Attachment')
+            a0.Position = Vector3.new(0,  hw, 0)
+            a0.Parent   = bikeRoot
+            local a1 = Instance.new('Attachment')
+            a1.Position = Vector3.new(0, -hw, 0)
+            a1.Parent   = bikeRoot
+            local trail = Instance.new('Trail')
+            trail.Attachment0   = a0
+            trail.Attachment1   = a1
+            trail.Lifetime      = trailSettings.lifetime
+            trail.MinLength     = 0
+            trail.FaceCamera    = true
+            trail.LightEmission = trailSettings.lightEmission
+            trail.Texture       = trailSettings.textureId
+            trail.Transparency  = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, 0),
+                NumberSequenceKeypoint.new(1, 1),
+            })
+            trail.Parent     = bikeRoot.Parent
+            _G.TrailAttach0  = a0
+            _G.TrailAttach1  = a1
+            _G.ActiveTrail   = trail
+            _G.TrailBikeRoot = bikeRoot
+            local frameTick = 0
+            local RS2 = game:GetService('RunService')
+            _G.TrailColorConn = RS2.Heartbeat:Connect(function()
+                frameTick += 1
+                if frameTick < 3 then return end
+                frameTick = 0
+                if not _G.ActiveTrail or not _G.ActiveTrail.Parent then return end
+                if trailSettings.rainbow or Toggles.RainbowBike.Value then
+                    if _G.TrailBikeRoot and _G.TrailBikeRoot.Parent then
+                        _G.ActiveTrail.Color = ColorSequence.new(_G.TrailBikeRoot.Color)
                     end
-                elseif now < nitroCooldownEnd then
-                    local t = math.clamp((nitroCooldownEnd - now) / cool, 0, 1)
-                    nitroBar.Size             = UDim2.new(t, 0, 1, 0)
-                    nitroBar.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
                 else
-                    nitroBg.Visible = false
-                    return
-                end
-
-                if not nitroActive then return end
-                local char = plr.Character
-                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
-                if not hum then return end
-                local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then return end
-                local vel    = seat.AssemblyLinearVelocity
-                local fwd    = Vector3.new(seat.CFrame.LookVector.X, 0, seat.CFrame.LookVector.Z)
-                if fwd.Magnitude < 0.01 then return end
-                fwd = fwd.Unit
-                local flatSpd = Vector3.new(vel.X, 0, vel.Z).Magnitude
-                if flatSpd < maxSpd then
-                    seat.AssemblyLinearVelocity = vel + fwd * dt * 120
+                    local sc = Color3.fromRGB(trailSettings.startR, trailSettings.startG, trailSettings.startB)
+                    local ec = Color3.fromRGB(trailSettings.endR,   trailSettings.endG,   trailSettings.endB)
+                    _G.ActiveTrail.Color = ColorSequence.new({
+                        ColorSequenceKeypoint.new(0, sc),
+                        ColorSequenceKeypoint.new(1, ec),
+                    })
                 end
             end)
-
-            showToast('Nitro ON - press ' .. (Options.NitroKeyInput.Value or 'F'))
+            showToast('Trail ON')
         else
-            if _G.NitroKeyConn then _G.NitroKeyConn:Disconnect(); _G.NitroKeyConn = nil end
-            if _G.NitroConn    then _G.NitroConn:Disconnect();    _G.NitroConn    = nil end
-            nitroBg.Visible = false
-            showToast('Nitro OFF')
+            if _G.TrailColorConn then _G.TrailColorConn:Disconnect(); _G.TrailColorConn = nil end
+            pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy(); _G.TrailAttach0 = nil end end)
+            pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy(); _G.TrailAttach1 = nil end end)
+            pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy();  _G.ActiveTrail  = nil end end)
+            _G.TrailBikeRoot = nil
+            showToast('Trail OFF')
         end
     end
 })
 
-Right:AddDivider()
-
--- ---- Speed Underglow ----------------------------------------------------
-Right:AddInput('UnderglowMaxSpeed', {
-    Default  = '120',
-    Numeric  = true,
-    Finished = false,
-    Text     = 'Underglow Max Speed (studs/s)',
-})
-
-Right:AddToggle('SpeedUnderglow', {
-    Text    = 'Speed Underglow',
-    Default = false,
-    Callback = function(val)
-        if val then
-            local OFFSETS = {
-                CFrame.new(0, -1.2, -1.2),  -- front
-                CFrame.new(0, -1.2,  0),     -- center
-                CFrame.new(0, -1.2,  1.2),   -- rear
-            }
-
-            local function buildUnderglowParts()
-                for _, p in ipairs(underglowParts) do pcall(function() p:Destroy() end) end
-                underglowParts = {}
-                for _ = 1, 3 do
-                    local p = Instance.new('Part')
-                    p.Name        = 'SMUnderglow'
-                    p.Size        = Vector3.new(1.4, 0.12, 0.5)
-                    p.Anchored    = true
-                    p.CanCollide  = false
-                    p.CastShadow  = false
-                    p.Material    = Enum.Material.Neon
-                    p.Color       = Color3.fromRGB(0, 100, 255)
-                    p.Transparency = 0
-                    p.Parent      = workspace
-                    local light = Instance.new('PointLight')
-                    light.Brightness = 1
-                    light.Range      = 6
-                    light.Color      = Color3.fromRGB(0, 100, 255)
-                    light.Parent     = p
-                    table.insert(underglowParts, p)
-                end
-            end
-
-            local function underglowColor(t)
-                -- t: 0 (slow) = blue (hue 0.67), 1 (fast) = red (hue 0)
-                return Color3.fromHSV((1 - t) * 0.67, 1, 1)
-            end
-
-            local lastSeat = nil
-
-            _G.UnderglowConn = RunService.Heartbeat:Connect(function()
-                local char = plr.Character
-                local hum  = char and char:FindFirstChildWhichIsA('Humanoid')
-                if not hum then return end
-                local seat = hum.SeatPart
-                if not seat or not seat:IsA('VehicleSeat') then
-                    for _, p in ipairs(underglowParts) do
-                        pcall(function() p.Transparency = 1 end)
-                    end
-                    return
-                end
-
-                if seat ~= lastSeat or #underglowParts == 0 or not underglowParts[1].Parent then
-                    buildUnderglowParts()
-                    lastSeat = seat
-                end
-
-                local maxSpd = tonumber(Options.UnderglowMaxSpeed.Value) or 120
-                local spd    = seat.AssemblyLinearVelocity.Magnitude
-                local t      = math.clamp(spd / maxSpd, 0, 1)
-                local col    = underglowColor(t)
-                local brightness = 0.6 + t * 2.4
-
-                for i, p in ipairs(underglowParts) do
-                    pcall(function()
-                        p.CFrame       = seat.CFrame * OFFSETS[i]
-                        p.Color        = col
-                        p.Transparency = 0
-                        local light = p:FindFirstChildOfClass('PointLight')
-                        if light then
-                            light.Color      = col
-                            light.Brightness = brightness
-                        end
-                    end)
-                end
-            end)
-
-            showToast('Speed Underglow ON')
-        else
-            if _G.UnderglowConn then _G.UnderglowConn:Disconnect(); _G.UnderglowConn = nil end
-            for _, p in ipairs(underglowParts) do pcall(function() p:Destroy() end) end
-            underglowParts = {}
-            showToast('Speed Underglow OFF')
-        end
+Right:AddButton({
+    Text = 'Trail Settings',
+    Func = function()
+        if trailGui then trailGui.Enabled = not trailGui.Enabled end
     end
 })
 
@@ -1799,8 +1734,10 @@ local MAP_SLOTS = {
 -- in any other game only Clone + Export are available: grab that game's map, save it to
 -- your PC via the executor file system, then import it next time you're in the supermoto game.
 local TARGET_GAME_ID = 74559235274954
-if game.PlaceId ~= TARGET_GAME_ID then return end
-local isTargetGame = true
+-- do NOT early-return on wrong game. the rest of the script (showToast,
+-- ESP, Mods, Customization, SMCleanup, etc.) is universal and must load
+-- in every game. only the supermoto-specific Maps block below is gated.
+local isTargetGame = (game.PlaceId == TARGET_GAME_ID)
 
 local MAP_SAVE_FOLDER = 'SuperMotoMaps'
 
@@ -3120,7 +3057,9 @@ showToast = function(text)
     end)
 end
 
--- spawner window
+-- spawner window (only built when current place exposes spawnable bikes)
+if BIKE_INFO.canSpawn then
+
 local spawnerFrame = Instance.new('Frame')
 spawnerFrame.Size = UDim2.new(0, 440, 0, 520)
 spawnerFrame.Position = UDim2.new(0.5, 20, 0.5, -260)
@@ -3182,13 +3121,13 @@ gridPad.PaddingTop = UDim.new(0, 4)
 gridPad.PaddingBottom = UDim.new(0, 4)
 gridPad.Parent = scroll
 
-local bikeList = {}
-for _, v in ipairs(RS.Bikes:GetChildren()) do
-    if v:IsA('Model') then
-        table.insert(bikeList, v)
-    end
-end
+local bikeList = BIKE_INFO.bikes
 scroll.CanvasSize = UDim2.new(0, 0, 0, math.ceil(#bikeList / 3) * 154 + 8)
+
+-- lazy population: ViewportFrame contents (bike clone + camera) are heavy.
+-- defer them to first toggle-open so script load + opening the panel stay snappy.
+local spawnerPopulated = false
+local spawnerPopulateFns = {}
 
 for _, bike in ipairs(bikeList) do
     local card = Instance.new('TextButton')
@@ -3207,26 +3146,29 @@ for _, bike in ipairs(bikeList) do
     vpf.ZIndex = 13
     vpf.Parent = card
 
-    local wm = Instance.new('WorldModel')
-    wm.Parent = vpf
-    local cam = Instance.new('Camera')
-    vpf.CurrentCamera = cam
-    cam.Parent = vpf
+    -- defer the clone-into-vpf work; the empty card is cheap, the clone is not
+    table.insert(spawnerPopulateFns, function()
+        local wm = Instance.new('WorldModel')
+        wm.Parent = vpf
+        local cam = Instance.new('Camera')
+        vpf.CurrentCamera = cam
+        cam.Parent = vpf
 
-    local ok, clone = pcall(function() return bike:Clone() end)
-    if ok and clone then
-        clone.Parent = wm
-        local cok, cf, size = pcall(function()
-            return clone:GetBoundingBox()
-        end)
-        if cok and cf then
-            local dist = math.max(size.X, size.Y, size.Z) * 1.4
-            cam.CFrame = CFrame.lookAt(
-                cf.Position + Vector3.new(dist, dist * 0.4, dist),
-                cf.Position
-            )
+        local ok, clone = pcall(function() return bike:Clone() end)
+        if ok and clone then
+            clone.Parent = wm
+            local cok, cf, size = pcall(function()
+                return clone:GetBoundingBox()
+            end)
+            if cok and cf then
+                local dist = math.max(size.X, size.Y, size.Z) * 1.4
+                cam.CFrame = CFrame.lookAt(
+                    cf.Position + Vector3.new(dist, dist * 0.4, dist),
+                    cf.Position
+                )
+            end
         end
-    end
+    end)
 
     local sep = Instance.new('Frame')
     sep.Size = UDim2.new(1, 0, 0, 1)
@@ -3263,7 +3205,7 @@ for _, bike in ipairs(bikeList) do
         TweenService:Create(card, TweenInfo.new(0.08), { BackgroundColor3 = BGSUB }):Play()
     end)
     card.MouseButton1Click:Connect(function()
-        RS.Remotes.SpawnBike:FireServer(bike.Name)
+        BIKE_INFO.spawn(bike.Name)
         showToast('Spawned ' .. bike.Name)
     end)
 end
@@ -3286,8 +3228,20 @@ UIS.InputChanged:Connect(function(inp)
     end
 end)
 
+local function populateSpawner()
+    if spawnerPopulated then return end
+    spawnerPopulated = true
+    task.spawn(function()
+        for i, fn in ipairs(spawnerPopulateFns) do
+            pcall(fn)
+            if i % 3 == 0 then task.wait() end
+        end
+    end)
+end
+
 Toggles.SpawnerToggle:OnChanged(function()
     spawnerFrame.Visible = Toggles.SpawnerToggle.Value
+    if Toggles.SpawnerToggle.Value then populateSpawner() end
 end)
 
 -- keybind (change hideKey to whatever you want)
@@ -3301,6 +3255,268 @@ UIS.InputBegan:Connect(function(inp, gp)
         Toggles.SpawnerToggle:SetValue(false)
     end
 end)
+
+end -- if BIKE_INFO.canSpawn
+
+-- ============================================================
+-- TRAIL SETTINGS PANEL
+-- ============================================================
+
+do
+    local TRAIL_PRESETS = {
+        { name = 'Solid',   textureId = '',                        lightEmission = 0.5  },
+        { name = 'Neon',    textureId = '',                        lightEmission = 1.0  },
+        { name = 'Sparkle', textureId = 'rbxassetid://1308397735', lightEmission = 0.8  },
+        { name = 'Ribbon',  textureId = 'rbxassetid://16254848910', lightEmission = 0.4 },
+    }
+
+    local tg = Instance.new('ScreenGui')
+    tg.Name          = 'TrailSettingsGui'
+    tg.ResetOnSpawn  = false
+    tg.DisplayOrder  = 998
+    tg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    tg.Enabled       = false
+    tg.Parent        = CoreGui
+    trailGui         = tg
+
+    local panel = Instance.new('Frame')
+    panel.Size             = UDim2.new(0, 360, 0, 500)
+    panel.Position         = UDim2.new(0.5, -460, 0.5, -250)
+    panel.BackgroundColor3 = BG2
+    panel.BorderSizePixel  = 1
+    panel.BorderColor3     = BORDER
+    panel.Active           = true
+    panel.ZIndex           = 10
+    panel.Parent           = tg
+
+    -- drag
+    do
+        local drag, dragStart, startPos = false, nil, nil
+        panel.InputBegan:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+                drag = true; dragStart = inp.Position; startPos = panel.Position
+            end
+        end)
+        panel.InputEnded:Connect(function(inp)
+            if inp.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
+        end)
+        game:GetService('UserInputService').InputChanged:Connect(function(inp)
+            if drag and inp.UserInputType == Enum.UserInputType.MouseMovement then
+                local d = inp.Position - dragStart
+                panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
+                                           startPos.Y.Scale, startPos.Y.Offset + d.Y)
+            end
+        end)
+    end
+
+    -- title bar
+    local title = Instance.new('Frame')
+    title.Size            = UDim2.new(1, 0, 0, 28)
+    title.BackgroundColor3 = BGSUB
+    title.BorderSizePixel = 0
+    title.ZIndex          = 11
+    title.Parent          = panel
+    local titleLbl = Instance.new('TextLabel')
+    titleLbl.Size  = UDim2.new(1, -36, 1, 0)
+    titleLbl.Position = UDim2.new(0, 8, 0, 0)
+    titleLbl.BackgroundTransparency = 1
+    titleLbl.Text  = 'Trail Settings'
+    titleLbl.TextColor3 = TEXT
+    titleLbl.Font  = Enum.Font.GothamBold
+    titleLbl.TextSize = 14
+    titleLbl.TextXAlignment = Enum.TextXAlignment.Left
+    titleLbl.ZIndex = 12
+    titleLbl.Parent = title
+    local closeBtn = Instance.new('TextButton')
+    closeBtn.Size  = UDim2.new(0, 28, 0, 28)
+    closeBtn.Position = UDim2.new(1, -28, 0, 0)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+    closeBtn.BorderSizePixel = 0
+    closeBtn.Text  = 'X'
+    closeBtn.TextColor3 = TEXT
+    closeBtn.Font  = Enum.Font.GothamBold
+    closeBtn.TextSize = 13
+    closeBtn.ZIndex = 12
+    closeBtn.Parent = title
+    closeBtn.MouseButton1Click:Connect(function() tg.Enabled = false end)
+
+    -- helper: row label + value box
+    local rowY = 36
+    local function makeRow(labelText, default, onChanged)
+        local lbl = Instance.new('TextLabel')
+        lbl.Size  = UDim2.new(0, 130, 0, 22)
+        lbl.Position = UDim2.new(0, 10, 0, rowY)
+        lbl.BackgroundTransparency = 1
+        lbl.Text  = labelText
+        lbl.TextColor3 = TEXT
+        lbl.Font  = Enum.Font.Gotham
+        lbl.TextSize = 13
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.ZIndex = 11
+        lbl.Parent = panel
+
+        local box = Instance.new('TextBox')
+        box.Size  = UDim2.new(0, 160, 0, 22)
+        box.Position = UDim2.new(0, 145, 0, rowY)
+        box.BackgroundColor3 = BGSUB
+        box.BorderColor3     = BORDER
+        box.BorderSizePixel  = 1
+        box.Text  = tostring(default)
+        box.TextColor3 = TEXT
+        box.Font  = Enum.Font.Gotham
+        box.TextSize = 13
+        box.ZIndex = 11
+        box.Parent = panel
+        box.FocusLost:Connect(function() onChanged(box.Text) end)
+        rowY += 32
+        return box
+    end
+
+    local function makeDivLine()
+        local line = Instance.new('Frame')
+        line.Size = UDim2.new(1, -20, 0, 1)
+        line.Position = UDim2.new(0, 10, 0, rowY + 6)
+        line.BackgroundColor3 = BORDER
+        line.BorderSizePixel = 0
+        line.ZIndex = 11
+        line.Parent = panel
+        rowY += 18
+    end
+
+    -- Type preset buttons
+    local typeLbl = Instance.new('TextLabel')
+    typeLbl.Size  = UDim2.new(0, 80, 0, 22)
+    typeLbl.Position = UDim2.new(0, 10, 0, rowY)
+    typeLbl.BackgroundTransparency = 1
+    typeLbl.Text  = 'Type:'
+    typeLbl.TextColor3 = TEXT
+    typeLbl.Font  = Enum.Font.GothamBold
+    typeLbl.TextSize = 13
+    typeLbl.TextXAlignment = Enum.TextXAlignment.Left
+    typeLbl.ZIndex = 11
+    typeLbl.Parent = panel
+    local presetBtns = {}
+    for i, preset in ipairs(TRAIL_PRESETS) do
+        local btn = Instance.new('TextButton')
+        btn.Size  = UDim2.new(0, 74, 0, 22)
+        btn.Position = UDim2.new(0, 70 + (i-1)*80, 0, rowY)
+        btn.BackgroundColor3 = BGSUB
+        btn.BorderColor3     = BORDER
+        btn.BorderSizePixel  = 1
+        btn.Text  = preset.name
+        btn.TextColor3 = TEXT
+        btn.Font  = Enum.Font.Gotham
+        btn.TextSize = 12
+        btn.ZIndex = 11
+        btn.Parent = panel
+        presetBtns[i] = btn
+        btn.MouseButton1Click:Connect(function()
+            trailSettings.textureId     = preset.textureId
+            trailSettings.lightEmission = preset.lightEmission
+            for _, b in ipairs(presetBtns) do b.BackgroundColor3 = BGSUB end
+            btn.BackgroundColor3 = ACCENT
+            -- live-apply if trail active
+            if _G.ActiveTrail and _G.ActiveTrail.Parent then
+                _G.ActiveTrail.Texture       = preset.textureId
+                _G.ActiveTrail.LightEmission = preset.lightEmission
+            end
+        end)
+    end
+    rowY += 36
+
+    -- Custom Texture ID
+    local texBox = makeRow('Texture ID', '', function(v)
+        trailSettings.textureId = v
+        if _G.ActiveTrail and _G.ActiveTrail.Parent then
+            _G.ActiveTrail.Texture = v
+        end
+    end)
+
+    makeDivLine()
+
+    -- Start Color
+    makeRow('Start R', trailSettings.startR, function(v)
+        trailSettings.startR = math.clamp(tonumber(v) or 255, 0, 255)
+    end)
+    makeRow('Start G', trailSettings.startG, function(v)
+        trailSettings.startG = math.clamp(tonumber(v) or 215, 0, 255)
+    end)
+    makeRow('Start B', trailSettings.startB, function(v)
+        trailSettings.startB = math.clamp(tonumber(v) or 0, 0, 255)
+    end)
+
+    makeDivLine()
+
+    -- End Color
+    makeRow('End R', trailSettings.endR, function(v)
+        trailSettings.endR = math.clamp(tonumber(v) or 200, 0, 255)
+    end)
+    makeRow('End G', trailSettings.endG, function(v)
+        trailSettings.endG = math.clamp(tonumber(v) or 100, 0, 255)
+    end)
+    makeRow('End B', trailSettings.endB, function(v)
+        trailSettings.endB = math.clamp(tonumber(v) or 0, 0, 255)
+    end)
+
+    makeDivLine()
+
+    -- Lifetime & Width
+    makeRow('Lifetime (s)', trailSettings.lifetime, function(v)
+        local n = math.clamp(tonumber(v) or 0.6, 0.05, 10)
+        trailSettings.lifetime = n
+        if _G.ActiveTrail and _G.ActiveTrail.Parent then _G.ActiveTrail.Lifetime = n end
+    end)
+    makeRow('Width (studs)', trailSettings.halfWidth * 2, function(v)
+        local n = math.clamp(tonumber(v) or 1, 0.1, 8)
+        trailSettings.halfWidth = n / 2
+        if _G.TrailAttach0 and _G.TrailAttach0.Parent then
+            _G.TrailAttach0.Position = Vector3.new(0,  trailSettings.halfWidth, 0)
+            _G.TrailAttach1.Position = Vector3.new(0, -trailSettings.halfWidth, 0)
+        end
+    end)
+    makeRow('Light Emission', trailSettings.lightEmission, function(v)
+        local n = math.clamp(tonumber(v) or 0.5, 0, 1)
+        trailSettings.lightEmission = n
+        if _G.ActiveTrail and _G.ActiveTrail.Parent then _G.ActiveTrail.LightEmission = n end
+    end)
+
+    makeDivLine()
+
+    -- Rainbow toggle
+    local rbLabel = Instance.new('TextLabel')
+    rbLabel.Size  = UDim2.new(0, 130, 0, 22)
+    rbLabel.Position = UDim2.new(0, 10, 0, rowY)
+    rbLabel.BackgroundTransparency = 1
+    rbLabel.Text  = 'Rainbow Trail'
+    rbLabel.TextColor3 = TEXT
+    rbLabel.Font  = Enum.Font.Gotham
+    rbLabel.TextSize = 13
+    rbLabel.TextXAlignment = Enum.TextXAlignment.Left
+    rbLabel.ZIndex = 11
+    rbLabel.Parent = panel
+    local rbBtn = Instance.new('TextButton')
+    rbBtn.Size  = UDim2.new(0, 80, 0, 22)
+    rbBtn.Position = UDim2.new(0, 145, 0, rowY)
+    rbBtn.BackgroundColor3 = BGSUB
+    rbBtn.BorderColor3     = BORDER
+    rbBtn.BorderSizePixel  = 1
+    rbBtn.Text  = 'OFF'
+    rbBtn.TextColor3 = TEXT
+    rbBtn.Font  = Enum.Font.Gotham
+    rbBtn.TextSize = 13
+    rbBtn.ZIndex = 11
+    rbBtn.Parent = panel
+    rbBtn.MouseButton1Click:Connect(function()
+        trailSettings.rainbow = not trailSettings.rainbow
+        if trailSettings.rainbow then
+            rbBtn.BackgroundColor3 = ACCENT
+            rbBtn.Text = 'ON'
+        else
+            rbBtn.BackgroundColor3 = BGSUB
+            rbBtn.Text = 'OFF'
+        end
+    end)
+end
 
 -- ============================================================
 -- BIKE CUSTOMIZATION PANEL
@@ -4879,7 +5095,8 @@ do
         end
         if n == 0 then showToast('No parts selected') else showToast('Hidden (' .. n .. ' node(s))') end
     end)
-    ppUnhideBtn.MouseButton1Click:Connect(function()
+    -- the actual unhide work, factored out so the confirm popup can call it
+    local function ppDoUnhide()
         local n = 0
         for _, node in ipairs(ppNodeList) do
             if node.selected then
@@ -4900,7 +5117,81 @@ do
             end
         end
         if n == 0 then showToast('No parts selected') else showToast('Unhidden (' .. n .. ' node(s))') end
-    end)
+    end
+
+    -- confirmation modal: prevents accidentally turning every hidden part visible
+    local function ppShowUnhideConfirm()
+        -- count selection up front so we can short-circuit the dialog
+        local sel = 0
+        for _, node in ipairs(ppNodeList) do
+            if node.selected then sel += 1 end
+        end
+        if sel == 0 then showToast('No parts selected'); return end
+
+        local backdrop = Instance.new('Frame')
+        backdrop.Size = UDim2.new(1, 0, 1, 0)
+        backdrop.BackgroundColor3 = Color3.new(0, 0, 0)
+        backdrop.BackgroundTransparency = 0.55
+        backdrop.BorderSizePixel = 0
+        backdrop.ZIndex = 100
+        backdrop.Parent = pp
+
+        local box = Instance.new('Frame')
+        box.Size = UDim2.new(0, 300, 0, 132)
+        box.AnchorPoint = Vector2.new(0.5, 0.5)
+        box.Position = UDim2.new(0.5, 0, 0.5, 0)
+        box.BackgroundColor3 = BG2
+        box.BorderSizePixel = 1
+        box.BorderColor3 = BORDER
+        box.ZIndex = 101
+        box.Parent = backdrop
+
+        local accent = Instance.new('Frame')
+        accent.Size = UDim2.new(1, 0, 0, 2)
+        accent.BackgroundColor3 = ACCENT
+        accent.BorderSizePixel = 0
+        accent.ZIndex = 102
+        accent.Parent = box
+
+        local msg = Instance.new('TextLabel')
+        msg.Size = UDim2.new(1, -20, 0, 68)
+        msg.Position = UDim2.new(0, 10, 0, 12)
+        msg.BackgroundTransparency = 1
+        msg.Text = 'Are you sure you would like to make every part visible?'
+        msg.TextColor3 = TEXT
+        msg.Font = Enum.Font.Gotham
+        msg.TextSize = 13
+        msg.TextWrapped = true
+        msg.TextXAlignment = Enum.TextXAlignment.Center
+        msg.TextYAlignment = Enum.TextYAlignment.Center
+        msg.ZIndex = 102
+        msg.Parent = box
+
+        local function mkBtn(text, xOff, onClick)
+            local b = Instance.new('TextButton')
+            b.Size = UDim2.new(0, 124, 0, 30)
+            b.Position = UDim2.new(0, xOff, 1, -40)
+            b.BackgroundColor3 = BGSUB
+            b.BorderSizePixel = 1
+            b.BorderColor3 = BORDER
+            b.Text = text
+            b.TextColor3 = TEXT
+            b.Font = Enum.Font.Gotham
+            b.TextSize = 12
+            b.ZIndex = 102
+            b.AutoButtonColor = false
+            b.Parent = box
+            b.MouseEnter:Connect(function() b.BorderColor3 = ACCENT end)
+            b.MouseLeave:Connect(function() b.BorderColor3 = BORDER end)
+            b.MouseButton1Click:Connect(onClick)
+            return b
+        end
+
+        mkBtn('Yes',  16,  function() backdrop:Destroy(); ppDoUnhide() end)
+        mkBtn('No',   160, function() backdrop:Destroy() end)
+    end
+
+    ppUnhideBtn.MouseButton1Click:Connect(ppShowUnhideConfirm)
 
     -- expose cleanup so SMCleanup can clear in-game outlines on reload
     _G.PPCleanup = ppClearSelBoxes
@@ -5445,23 +5736,16 @@ _G.SMCleanup = function()
                           'NoWobbleConn', 'NoWobbleKeyConn',
                           'AntiAdminConn', 'OptimizerConn',
                           'FlyConn', 'AntiFallConn',
-                          'RainbowConn',
+                          'RainbowConn', 'TrailColorConn',
                           'AdminESPConn', 'BikeESPConn', 'SpeedTagConn', 'SpeedTagLeaveConn',
                           'PlayerESPConn', 'PlayerESPCharConn',
                           'JumpKeyConn',
-                          'AutoFixScanConn', 'AutoFixSeatConn', 'AutoFixCharConn',
-                          'NitroKeyConn', 'NitroConn',
-                          'AutoLandConn',
-                          'UnderglowConn'}) do
+                          'AutoFixScanConn', 'AutoFixSeatConn', 'AutoFixCharConn'}) do
         if _G[key] then
             pcall(function() _G[key]:Disconnect() end)
             _G[key] = nil
         end
     end
-
-    -- destroy underglow parts
-    for _, p in ipairs(underglowParts) do pcall(function() p:Destroy() end) end
-    underglowParts = {}
 
     -- restore world gravity
     pcall(function() workspace.Gravity = 196.2 end)
@@ -5479,6 +5763,11 @@ _G.SMCleanup = function()
 
     -- clear hitbox selection boxes
     pcall(clearHitboxes)
+
+    -- cleanup bike trail
+    pcall(function() if _G.TrailAttach0 then _G.TrailAttach0:Destroy() end end)
+    pcall(function() if _G.TrailAttach1 then _G.TrailAttach1:Destroy() end end)
+    pcall(function() if _G.ActiveTrail   then _G.ActiveTrail:Destroy()  end end)
 
     -- cleanup ESP overlays
     pcall(clearAdminESP)
@@ -5504,9 +5793,9 @@ _G.SMCleanup = function()
     -- destroy ScreenGuis this script owns
     pcall(function() gui:Destroy() end)
     pcall(function() minimapGui:Destroy() end)
+    pcall(function() if trailGui      then trailGui:Destroy()      end end)
     pcall(function() if bikeCustGui   then bikeCustGui:Destroy()   end end)
     pcall(function() if partPickerGui then partPickerGui:Destroy() end end)
-    pcall(function() if nitroGui then nitroGui:Destroy(); nitroGui = nil end end)
 
     -- destroy LinoriaLib window
     pcall(function() Library.ScreenGui:Destroy() end)
