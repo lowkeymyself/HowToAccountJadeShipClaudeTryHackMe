@@ -1437,7 +1437,6 @@ Right:AddInput('JumpKeyInput', {
     Text     = 'Jump Key (e.g. G, H, F)',
 })
 
-local _lastJump = 0
 _G.JumpKeyConn = UIS.InputBegan:Connect(function(inp, gp)
     if gp then return end
     if inp.UserInputType ~= Enum.UserInputType.Keyboard then return end
@@ -1445,9 +1444,6 @@ _G.JumpKeyConn = UIS.InputBegan:Connect(function(inp, gp)
     local ok, kc = pcall(function() return Enum.KeyCode[keyStr] end)
     if not ok or kc == nil then return end
     if inp.KeyCode ~= kc then return end
-    local now = tick()
-    if now - _lastJump < 0.3 then return end
-    _lastJump = now
     local _, bikeRoot = getBikeRoot()
     if not bikeRoot then return end
     local force = tonumber(Options.JumpForceInput.Value) or 80
