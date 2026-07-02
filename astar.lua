@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v2.1 -- rebalance: medium turns slow down again, slower-turn steering
-           restored, predictive counter-steer no longer muted by the
-           acquisition rule during fast lateral convergence
+    v3.0 -- THE NETWORK UPDATE: record roads once ("save as road"),
+           a* routes over the road graph to any coordinate, rewind
+           keybind (hold R). real auto-driving, scan-by-driving.
 ]]
 
 -- ============================================================
@@ -92,6 +92,7 @@ local S = {
     playStart   = 0,
     lastT       = 0,        -- last commanded throttle (hud display)
     lastS       = 0,        -- last commanded steer (hud display)
+    acquired    = true,     -- reached the line at least once this drive
     invertSteer = false,
     speedMult   = 1.0,
     blocked     = nil,      -- {name=, class=, since=}
@@ -154,12 +155,14 @@ local FS = {
           and typeof(makefolder) == 'function'),
 }
 local gameFolder = ROOT_FOLDER .. '/' .. tostring(game.PlaceId)
+local netFolder = gameFolder .. '/network'
 
 function FS.ensure()
     if not FS.ok then return false end
     pcall(function()
         if not isfolder(ROOT_FOLDER) then makefolder(ROOT_FOLDER) end
         if not isfolder(gameFolder) then makefolder(gameFolder) end
+        if not isfolder(netFolder) then makefolder(netFolder) end
     end)
     return true
 end
@@ -199,6 +202,30 @@ end
 
 function FS.delete(fileName)
     pcall(function() delfile(fileName) end)
+end
+
+function FS.saveRoad(name, data)
+    if not FS.ensure() then return false end
+    return pcall(function()
+        writefile(netFolder .. '/' .. name .. '.json', HttpService:JSONEncode(data))
+    end)
+end
+
+function FS.netList()
+    if not FS.ensure() then return {} end
+    local out = {}
+    pcall(function()
+        for _, f in ipairs(listfiles(netFolder)) do
+            if f:sub(-5) == '.json' then
+                local data = FS.load(f)
+                if data and data.points then
+                    table.insert(out, { file = f, data = data })
+                end
+            end
+        end
+    end)
+    table.sort(out, function(a, b) return (a.data.name or '') < (b.data.name or '') end)
+    return out
 end
 
 local gameName = 'this game'
@@ -487,7 +514,7 @@ local function discardRecording()
     toast('path discarded', C.MUT)
 end
 
-local function saveRecording(name)
+local function saveRecording(name, asRoad)
     name = sanitize(name)
     if not name then toast('give the path a name first', C.RED) return false end
     if not FS.ok then toast('executor has no file api — cannot save', C.RED) return false end
@@ -505,9 +532,11 @@ local function saveRecording(name)
         runs = 0,
         learned = {},
         points = pts,
+        road = asRoad or nil,
     }
-    if FS.save(name, data) then
-        toast('saved "' .. name .. '" — ' .. fmtDist(S.recDist), C.GREEN)
+    local ok = asRoad and FS.saveRoad(name, data) or (not asRoad and FS.save(name, data))
+    if ok then
+        toast((asRoad and 'road segment "' or 'saved "') .. name .. '" — ' .. fmtDist(S.recDist), C.GREEN)
         clearSegs()
         clearGhosts()
         S.samples = {}
@@ -695,6 +724,232 @@ local function drawPlayPath(pts)
     end
 end
 
+-- ============================================================
+-- // road network (scan-by-driving) + a* routing
+-- ============================================================
+local Net = { segs = {}, nodes = nil, edges = nil, splits = nil }
+
+function Net.load()
+    Net.segs = FS.netList()
+    Net.nodes, Net.edges, Net.splits = nil, nil, nil
+    return #Net.segs
+end
+
+local function netPt(si, i)
+    local p = Net.segs[si].data.points[i]
+    return Vector3.new(p[1], p[2], p[3])
+end
+
+-- build graph: intersections between recorded road segments become nodes,
+-- stretches between them become edges with arc-length costs
+function Net.build()
+    if Net.nodes then return true end
+    if #Net.segs == 0 then return false end
+
+    -- spatial hash so intersection detection isn't o(n^2) points
+    local CELL = 8
+    local hash = {}
+    for si, seg in ipairs(Net.segs) do
+        local pts = seg.data.points
+        for i = 1, #pts, 2 do
+            local k = math.floor(pts[i][1] / CELL) .. ',' .. math.floor(pts[i][3] / CELL)
+            hash[k] = hash[k] or {}
+            table.insert(hash[k], { si = si, i = i })
+        end
+    end
+
+    -- find crossings: points of different segments within 7 studs
+    local rawSplits = {}
+    for si, seg in ipairs(Net.segs) do rawSplits[si] = { 1, #seg.data.points } end
+    for si, seg in ipairs(Net.segs) do
+        local pts = seg.data.points
+        for i = 1, #pts, 2 do
+            local cx, cz = math.floor(pts[i][1] / CELL), math.floor(pts[i][3] / CELL)
+            for ox = -1, 1 do
+                for oz = -1, 1 do
+                    local bucket = hash[(cx + ox) .. ',' .. (cz + oz)]
+                    if bucket then
+                        for _, e in ipairs(bucket) do
+                            if e.si > si and (netPt(si, i) - netPt(e.si, e.i)).Magnitude < 7 then
+                                table.insert(rawSplits[si], i)
+                                table.insert(rawSplits[e.si], e.i)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- collapse split indices bunched at the same junction
+    Net.splits = {}
+    for si, list in pairs(rawSplits) do
+        table.sort(list)
+        local out = {}
+        for _, i in ipairs(list) do
+            if #out == 0 or i - out[#out] > 15 then table.insert(out, i) end
+        end
+        local n = #Net.segs[si].data.points
+        if out[#out] ~= n then
+            if n - out[#out] <= 15 then out[#out] = n else table.insert(out, n) end
+        end
+        Net.splits[si] = out
+    end
+
+    -- nodes: cluster split positions across segments; edges between
+    -- consecutive splits along each segment
+    Net.nodes, Net.edges = {}, {}
+    local function nodeAt(pos)
+        for id, nd in ipairs(Net.nodes) do
+            if (nd.pos - pos).Magnitude < 10 then return id end
+        end
+        table.insert(Net.nodes, { pos = pos, adj = {} })
+        return #Net.nodes
+    end
+    for si, list in pairs(Net.splits) do
+        local prevNode, prevIdx = nil, nil
+        local pts = Net.segs[si].data.points
+        for _, i in ipairs(list) do
+            local id = nodeAt(netPt(si, i))
+            if prevNode and i > prevIdx and id ~= prevNode then
+                local len = 0
+                for j = prevIdx, i - 1 do
+                    len = len + (Vector3.new(pts[j + 1][1], pts[j + 1][2], pts[j + 1][3])
+                               - Vector3.new(pts[j][1], pts[j][2], pts[j][3])).Magnitude
+                end
+                if len > 1 then
+                    table.insert(Net.edges, { a = prevNode, b = id, si = si, i1 = prevIdx, i2 = i, len = len })
+                    local ei = #Net.edges
+                    table.insert(Net.nodes[prevNode].adj, ei)
+                    table.insert(Net.nodes[id].adj, ei)
+                end
+            end
+            prevNode, prevIdx = id, i
+        end
+    end
+    return true
+end
+
+function Net.nearest(pos)
+    local best
+    for si, seg in ipairs(Net.segs) do
+        local pts = seg.data.points
+        for i = 1, #pts, 2 do
+            local d = (Vector3.new(pts[i][1], pts[i][2], pts[i][3]) - pos).Magnitude
+            if not best or d < best.d then best = { si = si, i = i, d = d } end
+        end
+    end
+    return best
+end
+
+local function edgeContaining(si, i)
+    for ei, e in ipairs(Net.edges) do
+        if e.si == si and i >= e.i1 and i <= e.i2 then return ei end
+    end
+end
+
+local function subPts(si, iFrom, iTo)
+    local pts = Net.segs[si].data.points
+    local out = {}
+    local step = iFrom <= iTo and 1 or -1
+    for i = iFrom, iTo, step do
+        local p = pts[i]
+        table.insert(out, { p[1], p[2], p[3], p[4] or 16 })
+    end
+    return out
+end
+
+local function arcLen(si, i1, i2)
+    if i1 > i2 then i1, i2 = i2, i1 end
+    local pts = Net.segs[si].data.points
+    local len = 0
+    for j = i1, i2 - 1 do
+        len = len + (Vector3.new(pts[j + 1][1], pts[j + 1][2], pts[j + 1][3])
+                   - Vector3.new(pts[j][1], pts[j][2], pts[j][3])).Magnitude
+    end
+    return len
+end
+
+-- a* over the road graph. from/to are world positions; virtual start and
+-- goal nodes attach to the nearest point of their containing edge
+function Net.route(fromPos, toPos)
+    if not Net.build() then return nil, 'no road segments recorded yet' end
+    local sN, gN = Net.nearest(fromPos), Net.nearest(toPos)
+    if not sN or not gN then return nil, 'network empty' end
+    local sE, gE = edgeContaining(sN.si, sN.i), edgeContaining(gN.si, gN.i)
+    if not sE or not gE then return nil, 'network graph error' end
+
+    if sE == gE then
+        return subPts(sN.si, sN.i, gN.i)
+    end
+
+    local se, ge = Net.edges[sE], Net.edges[gE]
+    local dist, prev, open, closed = {}, {}, {}, {}
+    local function push(node, cost, from, viaEdge)
+        if dist[node] and dist[node] <= cost then return end
+        dist[node] = cost
+        prev[node] = { from = from, edge = viaEdge }
+        table.insert(open, node)
+    end
+    push(se.a, arcLen(se.si, se.i1, sN.i), 'START', sE)
+    push(se.b, arcLen(se.si, sN.i, se.i2), 'START', sE)
+
+    local found
+    while #open > 0 do
+        local bi, bf = nil, math.huge
+        for oi, node in ipairs(open) do
+            local f = dist[node] + (Net.nodes[node].pos - toPos).Magnitude
+            if f < bf then bf = f; bi = oi end
+        end
+        local cur = table.remove(open, bi)
+        if not closed[cur] then
+            closed[cur] = true
+            if cur == ge.a or cur == ge.b then
+                found = cur
+                break
+            end
+            for _, ei in ipairs(Net.nodes[cur].adj) do
+                local e = Net.edges[ei]
+                local nxt = (e.a == cur) and e.b or e.a
+                if not closed[nxt] then
+                    push(nxt, dist[cur] + e.len, cur, ei)
+                end
+            end
+        end
+    end
+    if not found then return nil, 'no route found -- network disconnected?' end
+
+    -- reconstruct node chain, then stitch polylines
+    local chain = {}
+    local cur = found
+    while cur ~= 'START' do
+        table.insert(chain, 1, { node = cur, edge = prev[cur].edge })
+        cur = prev[cur].from
+    end
+    local route = {}
+    local function append(list)
+        for i = (#route > 0 and 2 or 1), #list do table.insert(route, list[i]) end
+    end
+    do -- start partial along sE
+        local e = Net.edges[chain[1].edge]
+        local targetIdx = (chain[1].node == e.a) and e.i1 or e.i2
+        append(subPts(e.si, sN.i, targetIdx))
+    end
+    for ci = 2, #chain do -- full middle edges, oriented by entry node
+        local e = Net.edges[chain[ci].edge]
+        if e.a == chain[ci - 1].node then
+            append(subPts(e.si, e.i1, e.i2))
+        else
+            append(subPts(e.si, e.i2, e.i1))
+        end
+    end
+    do -- goal partial along gE
+        local fromIdx = (found == ge.a) and ge.i1 or ge.i2
+        append(subPts(ge.si, fromIdx, gN.i))
+    end
+    return route
+end
+
 function startPlayback(entry)
     if S.mode ~= 'idle' then toast('busy — end the current session first', C.RED) return end
     local h = hum()
@@ -707,17 +962,19 @@ function startPlayback(entry)
     local pts = data.points
     if not pts or #pts < 8 then toast('path file is empty or corrupt', C.RED) return end
 
-    -- must start near the path
+    -- must start near the path (recorded paths only -- network routes
+    -- start at the nearest road point and are acquired by driving to it)
     local here = sp.Position
     local startIdx, startDist = 1, math.huge
     for i = 1, #pts, 4 do
         local d = (Vector3.new(pts[i][1], pts[i][2], pts[i][3]) - here).Magnitude
         if d < startDist then startDist = d; startIdx = i end
     end
-    if startDist > OFFPATH_HARD then
+    if not entry.isRoute and startDist > OFFPATH_HARD then
         toast('too far from the path (' .. math.floor(startDist) .. ' studs) — get closer', C.RED)
         return
     end
+    S.acquired = startDist < 12
 
     S.mode = 'playing'
     S.playData = data
@@ -787,9 +1044,14 @@ function startPlayback(entry)
             endParkT = 0
         end
 
-        -- hard off-path abort
-        if err > OFFPATH_HARD then
+        -- hard off-path abort -- only once the line has been acquired
+        -- (network routes may legitimately begin far from the road)
+        if err < 8 then S.acquired = true end
+        if S.acquired and err > OFFPATH_HARD then
             stopPlayback('lost the path (' .. math.floor(err) .. ' studs off)')
+            return
+        elseif not S.acquired and err > 300 then
+            stopPlayback('too far from the route start')
             return
         end
 
@@ -1069,7 +1331,7 @@ local panel = new('Frame', {
     Name = 'Panel',
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.new(0.5, 0, 0.5, 0),
-    Size = UDim2.new(0, 620, 0, 420),
+    Size = UDim2.new(0, 620, 0, 470),
     BackgroundColor3 = C.BG0,
     Parent = overlay,
 }, { corner(8), stroke(C.BORDER), vgradient(Color3.fromRGB(20, 20, 20), Color3.fromRGB(8, 8, 8)) })
@@ -1185,11 +1447,13 @@ new('TextLabel', {
     Position = UDim2.new(0, 12, 0, 32), Size = UDim2.new(1, -24, 1, -44),
     Text = '1. start path — ui minimizes, hud appears\n'
         .. '2. drive or walk to your destination\n'
-        .. '3. hold rewind to back up and redo a section\n'
+        .. '3. hold R (or hud button) to rewind — car\n'
+        .. '   and line both walk backwards\n'
         .. '   green = path / red = old / yellow = redone\n'
-        .. '4. end path at the destination, name it, save\n\n'
-        .. 'paths save to workspace/' .. ROOT_FOLDER .. '/\n'
-        .. 'and only show up in this game.',
+        .. '4. end path, then: save path = a to b route\n'
+        .. '   save as road = network segment for a*\n\n'
+        .. 'record each road once as a road segment,\n'
+        .. 'then auto-drive to any coords (load tab).',
     Parent = recRight,
 })
 
@@ -1238,6 +1502,32 @@ invBtn.MouseButton1Click:Connect(function()
     invBtn.Text = 'invert steer: ' .. (S.invertSteer and 'on' or 'off')
     invBtn.TextColor3 = S.invertSteer and C.TEXT or C.DIM
 end)
+
+-- network auto-drive section
+new('TextLabel', {
+    BackgroundTransparency = 1, Font = FONT, TextSize = 11, TextColor3 = C.DIM,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Position = UDim2.new(0, 12, 0, 200), Size = UDim2.new(1, -24, 0, 14),
+    Text = '~/network auto-drive (a*)', Parent = loadRight,
+})
+local coordsBox = new('TextBox', {
+    Position = UDim2.new(0, 12, 0, 218), Size = UDim2.new(0.56, -14, 0, 26),
+    BackgroundColor3 = C.BG2, Font = FONT, TextSize = 12, TextColor3 = C.TEXT,
+    Text = '6398, 23, -42', PlaceholderText = 'x, y, z', ClearTextOnFocus = false,
+    Parent = loadRight,
+}, { corner(4), stroke(C.BORDER) })
+local netGoBtn = new('TextButton', {
+    Position = UDim2.new(0.56, 4, 0, 218), Size = UDim2.new(0.44, -16, 0, 26),
+    BackgroundColor3 = C.BG3, Font = FONTB, TextSize = 12, TextColor3 = C.TEXT,
+    Text = '> drive there', AutoButtonColor = false, Parent = loadRight,
+}, { corner(4), stroke(C.BORDER2) })
+hoverable(netGoBtn, C.BG3, Color3.fromRGB(45, 45, 45))
+local netStatus = new('TextLabel', {
+    BackgroundTransparency = 1, Font = FONT, TextSize = 10, TextColor3 = C.DIM,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Position = UDim2.new(0, 12, 0, 250), Size = UDim2.new(1, -24, 0, 14),
+    Text = 'network: not loaded', Parent = loadRight,
+})
 
 local goBtn = new('TextButton', {
     Position = UDim2.new(0, 12, 1, -78), Size = UDim2.new(1, -24, 0, 40),
@@ -1305,6 +1595,57 @@ delBtn.MouseButton1Click:Connect(function()
     refreshLoadList()
 end)
 
+-- network auto-drive: a* over recorded road segments to a coordinate
+netGoBtn.MouseButton1Click:Connect(function()
+    local x, y, z = coordsBox.Text:match('(-?%d+%.?%d*)%s*,%s*(-?%d+%.?%d*)%s*,%s*(-?%d+%.?%d*)')
+    if not x then toast('coords like: 6398, 23, -42', C.RED) return end
+    local destV = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+    local r = hrp()
+    if not r then toast('no character', C.RED) return end
+    local nSegs = Net.load()
+    if nSegs == 0 then
+        toast('no road segments — record roads and "save as road segment"', C.RED)
+        netStatus.Text = 'network: 0 segments'
+        return
+    end
+    toast('building network + routing...', C.WHITE)
+    task.spawn(function()
+        local route, rerr = Net.route(r.Position, destV)
+        if not route then
+            toast(rerr or 'routing failed', C.RED)
+            netStatus.Text = string.format('network: %d segs — routing failed', nSegs)
+            return
+        end
+        netStatus.Text = string.format('network: %d segs, %d nodes, %d edges',
+            nSegs, Net.nodes and #Net.nodes or 0, Net.edges and #Net.edges or 0)
+        -- final approach: short straight taper from the road exit to the
+        -- exact destination (parking lots etc), slow speeds
+        local lastP = route[#route]
+        local lastV = Vector3.new(lastP[1], lastP[2], lastP[3])
+        local gap = (destV - lastV).Magnitude
+        if gap > 4 and gap < 120 then
+            local n = math.max(math.floor(gap / 2), 2)
+            for i = 1, n do
+                local t = i / n
+                local p = lastV:Lerp(destV, t)
+                table.insert(route, { p.X, p.Y, p.Z, math.max(16 * (1 - t), 8) })
+            end
+        end
+        if #route < 8 then toast('route too short', C.RED) return end
+        S.speedMult = math.clamp(tonumber(multBox.Text) or 1, 0.3, 3)
+        multBox.Text = tostring(S.speedMult)
+        startPlayback({
+            file = nil,
+            isRoute = true,
+            data = {
+                name = string.format('route > %d, %d', destV.X, destV.Z),
+                points = route, learned = {}, runs = 0,
+                distance = 0,
+            },
+        })
+    end)
+end)
+
 -- ============================================================
 -- // save dialog (modal over panel)
 -- ============================================================
@@ -1314,7 +1655,7 @@ local saveModal = new('Frame', {
 }, { corner(8) })
 local saveBox = new('Frame', {
     AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
-    Size = UDim2.new(0, 340, 0, 160), BackgroundColor3 = C.BG1, ZIndex = 11,
+    Size = UDim2.new(0, 340, 0, 202), BackgroundColor3 = C.BG1, ZIndex = 11,
     Parent = saveModal,
 }, { corner(6), stroke(C.BORDER2), vgradient(Color3.fromRGB(24, 24, 24), Color3.fromRGB(12, 12, 12)) })
 new('TextLabel', {
@@ -1336,17 +1677,23 @@ local nameBox = new('TextBox', {
     Text = '', ClearTextOnFocus = false, ZIndex = 11, Parent = saveBox,
 }, { corner(4), stroke(C.BORDER) })
 local saveOk = new('TextButton', {
-    Position = UDim2.new(0, 16, 1, -46), Size = UDim2.new(0.5, -22, 0, 32),
+    Position = UDim2.new(0, 16, 1, -88), Size = UDim2.new(0.5, -22, 0, 32),
     BackgroundColor3 = C.BG3, Font = FONTB, TextSize = 12, TextColor3 = C.TEXT,
-    Text = 'save', AutoButtonColor = false, ZIndex = 11, Parent = saveBox,
+    Text = 'save path', AutoButtonColor = false, ZIndex = 11, Parent = saveBox,
 }, { corner(4), stroke(C.BORDER2) })
 local saveNo = new('TextButton', {
-    Position = UDim2.new(0.5, 6, 1, -46), Size = UDim2.new(0.5, -22, 0, 32),
+    Position = UDim2.new(0.5, 6, 1, -88), Size = UDim2.new(0.5, -22, 0, 32),
     BackgroundColor3 = C.BG1, Font = FONT, TextSize = 12, TextColor3 = C.DIM,
     Text = 'discard', AutoButtonColor = false, ZIndex = 11, Parent = saveBox,
 }, { corner(4), stroke(C.BORDER) })
+local saveRoadBtn = new('TextButton', {
+    Position = UDim2.new(0, 16, 1, -46), Size = UDim2.new(1, -32, 0, 32),
+    BackgroundColor3 = C.BG2, Font = FONTB, TextSize = 12, TextColor3 = C.TEXT,
+    Text = 'save as road segment  (network)', AutoButtonColor = false, ZIndex = 11, Parent = saveBox,
+}, { corner(4), stroke(C.BORDER2) })
 hoverable(saveOk, C.BG3, Color3.fromRGB(45, 45, 45))
 hoverable(saveNo, C.BG1, Color3.fromRGB(55, 22, 22))
+hoverable(saveRoadBtn, C.BG2, Color3.fromRGB(45, 45, 45))
 
 function showSaveDialog()
     openOverlay()
@@ -1356,6 +1703,12 @@ function showSaveDialog()
 end
 saveOk.MouseButton1Click:Connect(function()
     if saveRecording(nameBox.Text) then
+        saveModal.Visible = false
+        selectTab('load')
+    end
+end)
+saveRoadBtn.MouseButton1Click:Connect(function()
+    if saveRecording(nameBox.Text, true) then
         saveModal.Visible = false
         selectTab('load')
     end
@@ -1406,6 +1759,21 @@ new('TextLabel', {
     Position = UDim2.new(0, 12, 1, -28), Size = UDim2.new(1, -24, 0, 16),
     Text = 'end path at your destination', Parent = recHud,
 })
+
+-- rewind keybind: hold R while recording (textboxes excluded)
+bind(UserInputService.InputBegan:Connect(function(inp, gpe)
+    if gpe then return end
+    if inp.KeyCode == Enum.KeyCode.R and S.mode == 'recording' then
+        rewindBtn.TextColor3 = C.YELLOW
+        setRewind(true)
+    end
+end))
+bind(UserInputService.InputEnded:Connect(function(inp)
+    if inp.KeyCode == Enum.KeyCode.R and S.mode == 'rewinding' then
+        rewindBtn.TextColor3 = C.MUT
+        setRewind(false)
+    end
+end))
 
 rewindBtn.MouseButton1Down:Connect(function()
     rewindBtn.TextColor3 = C.YELLOW
