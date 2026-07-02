@@ -1266,7 +1266,7 @@ function Scan.route(fromPos, toPos)
     if not gc then return nil, 'destination not near any scanned surface' end
 
     local sKey, gKey = scanKey(sc.cx, sc.cz), scanKey(gc.cx, gc.cz)
-    if sKey == gKey then return nil, 'already there' end
+    if sKey == gKey then return nil, 'already at the destination' end
 
     local dirs = {
         { 1, 0, 1 }, { -1, 0, 1 }, { 0, 1, 1 }, { 0, -1, 1 },
@@ -1511,7 +1511,10 @@ function startPlayback(entry)
     end
     local data = entry.data
     local pts = data.points
-    if not pts or #pts < 8 then toast('path file is empty or corrupt', C.RED) return end
+    -- recorded paths need real length; routes may be legitimately tiny
+    -- (destination 20 studs away is still a valid drive)
+    local minPts = entry.isRoute and 2 or 8
+    if not pts or #pts < minPts then toast('path file is empty or corrupt', C.RED) return end
 
     -- must start near the path (recorded paths only -- network routes
     -- start at the nearest road point and are acquired by driving to it)
@@ -1601,8 +1604,10 @@ function startPlayback(entry)
         if S.acquired and err > OFFPATH_HARD then
             stopPlayback('lost the path (' .. math.floor(err) .. ' studs off)')
             return
-        elseif not S.acquired and err > 300 then
-            stopPlayback('too far from the route start')
+        elseif not S.acquired and err > 1500 then
+            -- acquisition drives TO the route; only a truly broken state
+            -- (wrong map region, teleport mid-drive) aborts before touch
+            stopPlayback('lost before reaching the route')
             return
         end
 
@@ -2269,7 +2274,7 @@ netGoBtn.MouseButton1Click:Connect(function()
                 table.insert(route, { p.X, p.Y, p.Z, math.max(16 * (1 - t), 8) })
             end
         end
-        if #route < 8 then toast('route too short', C.RED) return end
+        if #route < 2 then toast('already at the destination', C.WHITE) return end
         S.speedMult = math.clamp(tonumber(multBox.Text) or 1, 0.3, 3)
         multBox.Text = tostring(S.speedMult)
         startPlayback({
