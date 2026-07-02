@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.9 -- reroutes that actually go around (hit-point fencing, smoothing
-           respects fences), sustained-steer braking (no spin-outs),
-           tight-spot side rays (slow in cluttered streets)
+    v4.9.1 -- scan shrink fixed (monotonic short runs: lerp can't corrupt
+           heights anymore), findCell radius 3x, road-only fallback is
+           announced, fence memory 2min. WIPE + RESCAN ONCE after this.
 ]]
 
 -- ============================================================
@@ -1001,15 +1001,26 @@ function Scan.saveFile()
         table.sort(list, function(a, b) return a[1] < b[1] end)
         local runs, run = {}, nil
         for _, e in ipairs(list) do
-            if run and e[1] == run.cz0 + run.n and math.abs(e[2] - run.lastY) <= 1.5 then
-                run.n = run.n + 1
-                run.lastY = e[2]
-            else
+            -- runs must be SHORT and MONOTONIC: load reconstructs heights
+            -- by lerp, and a rise-then-fall run lerps to wrong y values,
+            -- which poisons future rescans (the 600k -> 300k shrink bug)
+            local merged = false
+            if run and e[1] == run.cz0 + run.n and run.n < 16
+               and math.abs(e[2] - run.lastY) <= 1.0 then
+                local d = e[2] - run.lastY
+                if d == 0 or run.dir == 0 or (d > 0) == (run.dir > 0) then
+                    run.n = run.n + 1
+                    if d ~= 0 then run.dir = d end
+                    run.lastY = e[2]
+                    merged = true
+                end
+            end
+            if not merged then
                 if run then
                     table.insert(runs, { run.cz0, run.n,
                         math.floor(run.y0 * 10) / 10, math.floor(run.lastY * 10) / 10 })
                 end
-                run = { cz0 = e[1], n = 1, y0 = e[2], lastY = e[2] }
+                run = { cz0 = e[1], n = 1, y0 = e[2], lastY = e[2], dir = 0 }
             end
         end
         if run then
@@ -1258,7 +1269,7 @@ end
 function Scan.findCell(pos)
     local cx0 = math.floor(pos.X / Scan.CELL + 0.5)
     local cz0 = math.floor(pos.Z / Scan.CELL + 0.5)
-    for ring = 0, 14 do
+    for ring = 0, 30 do
         local best
         for dx = -ring, ring do
             for dz = -ring, ring do
@@ -1362,9 +1373,12 @@ function Scan.route(fromPos, toPos)
     -- licensed driver: roads-only when tags exist. unlicensed: free
     -- routing from the start. unrestricted always remains the last-resort
     -- fallback so a route is found whenever one physically exists
-    local from
+    local from, usedFree = nil, false
     if S.licensed and Scan.roadCount > 0 then from = search(true) end
-    if not from then from = search(false) end
+    if not from then
+        usedFree = S.licensed and Scan.roadCount > 0
+        from = search(false)
+    end
     if not from then return nil, 'no drivable route on the scan (disconnected area?)' end
 
     -- reconstruct cell chain
@@ -1432,7 +1446,7 @@ function Scan.route(fromPos, toPos)
             table.insert(pts, { ax + (bx - ax) * t, ay + (by - ay) * t + 1, az + (bz - az) * t, segSpd })
         end
     end
-    return pts
+    return pts, nil, usedFree
 end
 
 -- a* over the road graph. from/to are world positions; virtual start and
@@ -1731,7 +1745,7 @@ function startPlayback(entry)
                         local bz = math.floor(bp.Z / Scan.CELL + 0.5)
                         for dx = -3, 3 do
                             for dz = -3, 3 do
-                                S.blockCells[(bx + dx) .. ',' .. (bz + dz)] = os.clock() + 300
+                                S.blockCells[(bx + dx) .. ',' .. (bz + dz)] = os.clock() + 120
                             end
                         end
                     end
@@ -2369,9 +2383,12 @@ routeAndDrive = function(destV)
         local route, rerr, mode
         -- scan grid first: any scanned coordinate is reachable
         if Scan.available() then
-            local ok, rt, er = pcall(Scan.route, r.Position, destV)
+            local ok, rt, er, usedFree = pcall(Scan.route, r.Position, destV)
             if ok and rt then
                 route, mode = rt, 'scan'
+                if usedFree then
+                    toast('note: no road-only path — free route (check road tags / fences)', C.YELLOW)
+                end
             else
                 rerr = ok and er or ('scan error: ' .. tostring(rt):sub(1, 50))
             end
