@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.1 -- FULL MAP SCANNER: material gate removed (flat + clear = road),
-           rays respect collidability (no phantom holes from decor),
-           pothole healing pass, underwater rejection
+    v4.2 -- car-body-aware routing: wall-hug cost penalty steers routes
+           to the middle of open space, corridor smoothing keeps a
+           car-width of clearance on shortcuts
 ]]
 
 -- ============================================================
@@ -1201,6 +1201,23 @@ function Scan.route(fromPos, toPos)
         { 1, 0, 1 }, { -1, 0, 1 }, { 0, 1, 1 }, { 0, -1, 1 },
         { 1, 1, 1.414 }, { 1, -1, 1.414 }, { -1, 1, 1.414 }, { -1, -1, 1.414 },
     }
+    -- wall-hug penalty: a cell with missing neighbors borders something.
+    -- the car has a body -- prefer the middle of open space, pay extra
+    -- to squeeze along edges (still possible when it's the only way)
+    local hugCache = {}
+    local function hugPenalty(x, z, k2)
+        local c = hugCache[k2]
+        if c then return c end
+        local n = 0
+        for dx = -1, 1 do
+            for dz = -1, 1 do
+                if (dx ~= 0 or dz ~= 0) and grid[scanKey(x + dx, z + dz)] then n = n + 1 end
+            end
+        end
+        c = (8 - n) * 0.7
+        hugCache[k2] = c
+        return c
+    end
     local expanded, found = 0, false
     while true do
         local cur = heapPop(open)
@@ -1221,7 +1238,7 @@ function Scan.route(fromPos, toPos)
                     ny = nil
                 end
                 if ny then
-                    local ng = g[ck] + d[3]
+                    local ng = g[ck] + d[3] + hugPenalty(nx, nz, nk)
                     if not g[nk] or ng < g[nk] then
                         g[nk] = ng
                         from[nk] = ck
@@ -1242,17 +1259,27 @@ function Scan.route(fromPos, toPos)
         ck = from[ck]
     end
 
-    -- line-of-sight smoothing so the route doesn't zigzag cell to cell
+    -- corridor line-of-sight smoothing: the shortcut must be clear along
+    -- a 3-cell-wide band (car body width), not just a center thread --
+    -- otherwise smoothed lines graze trees and poles
     local function los(a, b)
-        local steps = math.max(math.abs(b[1] - a[1]), math.abs(b[2] - a[2]))
+        local dx, dz = b[1] - a[1], b[2] - a[2]
+        local steps = math.max(math.abs(dx), math.abs(dz))
         if steps == 0 then return true end
+        -- perpendicular offset in whole cells
+        local len = math.sqrt(dx * dx + dz * dz)
+        local px = math.floor(-dz / len + 0.5)
+        local pz = math.floor(dx / len + 0.5)
         local prevY = grid[scanKey(a[1], a[2])]
         for s = 1, steps do
             local t = s / steps
-            local x = math.floor(a[1] + (b[1] - a[1]) * t + 0.5)
-            local z = math.floor(a[2] + (b[2] - a[2]) * t + 0.5)
+            local x = math.floor(a[1] + dx * t + 0.5)
+            local z = math.floor(a[2] + dz * t + 0.5)
             local y = grid[scanKey(x, z)]
             if not y or math.abs(y - prevY) > 4 then return false end
+            if not grid[scanKey(x + px, z + pz)] or not grid[scanKey(x - px, z - pz)] then
+                return false
+            end
             prevY = y
         end
         return true
