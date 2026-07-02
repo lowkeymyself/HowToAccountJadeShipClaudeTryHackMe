@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.0 -- THE SCANNER: flood-fill maps every drivable surface in the
-           game (material-learning, saved to disk), grid a* + smoothing
-           routes to ANY scanned coordinate. network graph as fallback.
+    v4.1 -- FULL MAP SCANNER: material gate removed (flat + clear = road),
+           rays respect collidability (no phantom holes from decor),
+           pothole healing pass, underwater rejection
 ]]
 
 -- ============================================================
@@ -243,6 +243,7 @@ pathFolder.Parent = workspace
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 rayParams.IgnoreWater = true
+rayParams.RespectCanCollide = true -- decorations never block rays
 
 local function refreshRayFilter(extra)
     local list = { pathFolder }
@@ -895,7 +896,7 @@ local Scan = {
     conn = nil,
     rp = nil,
 }
-local SCAN_BUDGET = 250          -- cells per frame (2 raycasts each)
+local SCAN_BUDGET = 350          -- cells per frame (2-3 raycasts each)
 local SCAN_MAX_CELLS = 900000    -- runaway guard
 
 local function scanKey(cx, cz) return cx .. ',' .. cz end
@@ -962,9 +963,49 @@ function Scan.saveFile()
     end))
 end
 
+-- pothole healing: raycast noise leaves holes in the grid that force
+-- stupid detours. any empty cell with 5+ drivable neighbors at a
+-- consistent height is clearly drivable -- fill it
+function Scan.fillHoles()
+    if not Scan.grid then return 0 end
+    local cand = {}
+    for key, y in pairs(Scan.grid) do
+        local cxs, czs = key:match('(-?%d+),(-?%d+)')
+        local cx, cz = tonumber(cxs), tonumber(czs)
+        for dx = -1, 1 do
+            for dz = -1, 1 do
+                if dx ~= 0 or dz ~= 0 then
+                    local nk = scanKey(cx + dx, cz + dz)
+                    if not Scan.grid[nk] then
+                        local c = cand[nk]
+                        if not c then c = { n = 0, sum = 0, lo = y, hi = y }; cand[nk] = c end
+                        c.n = c.n + 1
+                        c.sum = c.sum + y
+                        if y < c.lo then c.lo = y end
+                        if y > c.hi then c.hi = y end
+                    end
+                end
+            end
+        end
+    end
+    local filled = 0
+    for nk, c in pairs(cand) do
+        if c.n >= 5 and (c.hi - c.lo) <= 3 then
+            Scan.grid[nk] = c.sum / c.n
+            Scan.count = Scan.count + 1
+            filled = filled + 1
+        end
+    end
+    return filled
+end
+
 function Scan.available()
     if Scan.grid and Scan.count > 0 then return true end
-    return Scan.loadFile()
+    if Scan.loadFile() then
+        pcall(Scan.fillHoles)
+        return true
+    end
+    return false
 end
 
 local function scanPush(cx, cz, refY)
@@ -976,8 +1017,10 @@ function Scan.stop(save)
     Scan.running = false
     if Scan.conn then Scan.conn:Disconnect() Scan.conn = nil end
     if save and Scan.grid then
+        local filled = 0
+        pcall(function() filled = Scan.fillHoles() end)
         Scan.saveFile()
-        toast(('scan saved — %d drivable cells'):format(Scan.count), C.GREEN)
+        toast(('scan saved — %d drivable cells (%d potholes healed)'):format(Scan.count, filled), C.GREEN)
     end
 end
 
@@ -1000,10 +1043,17 @@ function Scan.step()
             Scan.checked = Scan.checked + 1
             local wx, wz = cx * Scan.CELL, cz * Scan.CELL
             local hit = workspace:Raycast(Vector3.new(wx, refY + 30, wz), Vector3.new(0, -80, 0), Scan.rp)
-            if hit and hit.Normal.Y >= 0.92 and Scan.mats[hit.Material.Name]
-               and math.abs(hit.Position.Y - refY) <= 5 then
+            -- flat + height-continuous = drivable, ANY material (a car
+            -- doesn't care). water rejected via a water-sensitive ray
+            if hit and hit.Normal.Y >= 0.92 and math.abs(hit.Position.Y - refY) <= 5 then
+                local wet = workspace:Raycast(Vector3.new(wx, refY + 30, wz), Vector3.new(0, -80, 0), Scan.rpWater)
+                if wet and wet.Material == Enum.Material.Water then hit = nil end
+            else
+                hit = nil
+            end
+            if hit then
                 -- clearance: nothing solid sitting on the surface
-                local up = workspace:Raycast(hit.Position + Vector3.new(0, 0.7, 0), Vector3.new(0, 5.5, 0), Scan.rp)
+                local up = workspace:Raycast(hit.Position + Vector3.new(0, 0.7, 0), Vector3.new(0, 4.5, 0), Scan.rp)
                 if not up then
                     local y = hit.Position.Y
                     if not Scan.grid[key] then
@@ -1036,6 +1086,7 @@ function Scan.start()
     local rp = RaycastParams.new()
     rp.FilterType = Enum.RaycastFilterType.Exclude
     rp.IgnoreWater = true
+    rp.RespectCanCollide = true -- non-collidable decor can't fake-block roads
     local excl = { pathFolder, playFolder }
     if char() then table.insert(excl, char()) end
     -- exclude vehicles/characters so parked cars don't poison road cells
@@ -1049,6 +1100,12 @@ function Scan.start()
     end)
     rp.FilterDescendantsInstances = excl
     Scan.rp = rp
+    local rpW = RaycastParams.new()
+    rpW.FilterType = Enum.RaycastFilterType.Exclude
+    rpW.IgnoreWater = false -- water-sensitive twin for underwater rejection
+    rpW.RespectCanCollide = true
+    rpW.FilterDescendantsInstances = excl
+    Scan.rpWater = rpW
 
     local hit = workspace:Raycast(r.Position + Vector3.new(0, 10, 0), Vector3.new(0, -60, 0), rp)
     if not hit then toast('no ground under you — park on a road first', C.RED) return end
