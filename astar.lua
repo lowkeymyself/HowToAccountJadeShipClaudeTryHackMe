@@ -1,8 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.9 -- natural braking envelope (brake early when fast, done before
-           turn-in), dull bends don't slow, faster hairpins, arrival fix
+    v2.0 -- high-speed competence: scanner sees true braking distance
+           (650 studs), road turns punch through the steer cap, line
+           acquisition merges with speed when aligned, 0.4-stud deadzone
 ]]
 
 -- ============================================================
@@ -657,8 +658,10 @@ end
 -- on a natural envelope BEFORE corners. long stride (6 samples) filters
 -- recording noise so gentle bends don't read as sharp corners
 local function maxCurvatureAhead(pts, idx, spd)
-    -- scan the true braking distance for the current speed, plus margin
-    local scanDist = math.clamp(spd * spd / 44 + 30, 30, 160)
+    -- scan the TRUE braking distance for the current speed. at 160
+    -- studs/s (~100mph) stopping for a hairpin needs ~580 studs -- the
+    -- scanner must see that far or braking starts too late
+    local scanDist = math.clamp(spd * spd / 40 + 40, 40, 650)
     local stride = 6
     local acc, maxK, prevDir = 0, 0, nil
     local dAtMax = scanDist
@@ -869,11 +872,12 @@ function startPlayback(entry)
         local yawDamp = math.clamp(sp2.AssemblyAngularVelocity.Y * 0.42, -0.7, 0.7)
 
         -- predictive cross-track steering: correct based on where the
-        -- velocity is carrying us (~0.35s ahead), not where we are.
-        -- drifting away -> counters early before going wide. converging
-        -- fast -> eases off before crossing the line. like a human.
-        --   0.25 studs -> ~0.06   1 stud -> ~0.26   2 -> ~0.62   3+ -> 0.90
+        -- velocity is carrying us, not where we are. drifting away ->
+        -- counters early before going wide. converging fast -> eases off
+        -- before crossing the line. like a human.
         local ct = 0
+        local align = 1
+        local acquiring = err > 6
         do
             local a = pts[idx]
             local b = pts[math.min(idx + 1, #pts)]
@@ -884,20 +888,41 @@ function startPlayback(entry)
                 local lat = Vector3.new(pos.X - a[1], 0, pos.Z - a[3]):Dot(rightOf)
                 local vel = sp2.AssemblyLinearVelocity
                 local latVel = Vector3.new(vel.X, 0, vel.Z):Dot(rightOf)
-                local predLat = lat + latVel * 0.35
-                ct = -math.clamp(predLat * 0.22 * (1 + math.abs(predLat) / 5), -0.9, 0.9)
+                -- longer horizon while acquiring the line: counter-steer
+                -- BEFORE crossing it, not after sailing past
+                local predLat = lat + latVel * (acquiring and 0.6 or 0.35)
+                -- soft deadzone: "somewhat below" the line, not surgically
+                -- glued -- sub-0.4-stud offsets are left alone
+                local mag = math.max(math.abs(predLat) - 0.4, 0)
+                local effLat = (predLat >= 0 and 1 or -1) * mag
+                ct = -math.clamp(effLat * 0.16 * (1 + math.abs(effLat) / 5), -0.8, 0.8)
                 -- offset-aware speed softening: near the line, high-speed
                 -- authority is cut (stability, no weave). genuinely off the
-                -- line (1 -> 4 studs) the softening fades out -- accuracy
-                -- demands full pull regardless of speed
+                -- line the softening fades out -- accuracy demands pull
                 local soften = 1 / (1 + spd / 55)
-                local offBlend = math.clamp((math.abs(predLat) - 1) / 3, 0, 1)
+                local offBlend = math.clamp((math.abs(effLat) - 1) / 3, 0, 1)
                 ct = ct * (soften + (1 - soften) * offBlend)
             end
         end
-        -- hard ceiling: at high speed full lock is never survivable
-        local steerCap = math.clamp(1.25 - spd / 110, 0.35, 1)
+        -- how aligned is the nose with the route ahead?
+        do
+            local toT = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
+            if toT.Magnitude > 1 then
+                local fwd = sp2.CFrame.LookVector
+                align = Vector3.new(fwd.X, 0, fwd.Z).Unit:Dot(toT.Unit)
+            end
+        end
+        -- demand-aware ceiling: corrections stay capped at speed (jerks
+        -- become drifts), but when the ROAD demands a real turn the
+        -- pursuit term is allowed through -- up to 0.75 even flat out
+        local baseCap = math.clamp(1.25 - spd / 110, 0.35, 1)
+        local steerCap = math.max(baseCap, math.min(0.75, math.abs(p)))
         local steer = math.clamp(p + yawDamp + ct, -steerCap, steerCap)
+        -- acquiring the line while already pointing at it: stop sawing
+        -- the wheel -- speed closes the gap, not steering
+        if acquiring and align > 0.75 then
+            steer = steer * 0.5
+        end
 
         -- target speed: recorded profile x multiplier x learned factor, curve slowdown
         local recSpd = pts[math.min(idx + 4, #pts)][4] or 16
@@ -912,16 +937,23 @@ function startPlayback(entry)
         -- k threshold ignores dull bends entirely (no fake slowdowns)
         local k, dCorner = maxCurvatureAhead(pts, idx, spd)
         if k > 0.004 then
-            local vCorner = math.max(math.sqrt(30 / k), 11)
+            -- 8% safety trim on corner speed: margin for obstacles instead
+            -- of exiting every tight turn at the edge of control
+            local vCorner = math.max(math.sqrt(30 / k) * 0.92, 11)
             local dBrake = math.max(dCorner - 12, 0)
             local vAllowed = math.sqrt(vCorner * vCorner + 2 * 22 * dBrake)
             targetSpd = math.min(targetSpd, vAllowed)
         end
 
-        -- recovery mode: too far off line -- slow down, let the controller
-        -- steer naturally (boosting gain here is what caused spirals)
+        -- recovery mode: too far off line. pointing at the path already?
+        -- merge back with SPEED, not steering. pointing away? slow down
+        -- and let the controller bring the nose around first
         if err > OFFPATH_SOFT then
-            targetSpd = math.min(targetSpd, 10)
+            if align > 0.75 then
+                targetSpd = math.max(targetSpd, math.min(spd + 12, 30))
+            else
+                targetSpd = math.min(targetSpd, 10)
+            end
         end
 
         -- throttle: proportional band, full send when well under target
