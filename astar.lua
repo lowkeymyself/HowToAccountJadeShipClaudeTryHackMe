@@ -1,7 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.0
+    v1.1 -- pwm analog control (controller emulation through keys),
+           speed-scaled steering authority, no more seat/vim mode split
 ]]
 
 -- ============================================================
@@ -38,7 +39,7 @@ local SEG_HEIGHT      = 0.08      -- path visual thickness
 local REWIND_RATE     = 26        -- samples per second while rewinding
 local GHOST_EAT_DIST  = 6         -- new path eats red ghost segs within this
 local LOOKAHEAD_MIN   = 10
-local LOOKAHEAD_MAX   = 26
+local LOOKAHEAD_MAX   = 34
 local OFFPATH_SOFT    = 12        -- studs: recovery mode
 local OFFPATH_HARD    = 40        -- studs: abort
 local ARRIVE_DIST     = 10
@@ -88,7 +89,8 @@ local S = {
     playFile    = nil,      -- filename during playback
     playIdx     = 1,        -- closest sample index
     playStart   = 0,
-    driveMode   = 'seat',   -- seat | vim
+    lastT       = 0,        -- last commanded throttle (hud display)
+    lastS       = 0,        -- last commanded steer (hud display)
     invertSteer = false,
     speedMult   = 1.0,
     blocked     = nil,      -- {name=, class=, since=}
@@ -529,22 +531,34 @@ local function vimRelease()
         if down then vimKey(kc, false) end
     end
 end
+-- pwm: emulate analog control through digital keys. a key held for 30%
+-- of every cycle reads as ~30% input to games that poll key state.
+local PWM_CYCLE = 0.12
+local function pwmOn(duty)
+    if duty <= 0.03 then return false end
+    if duty >= 0.93 then return true end
+    return (os.clock() % PWM_CYCLE) / PWM_CYCLE < duty
+end
+
 local function applyDrive(throttle, steer)
     if S.invertSteer then steer = -steer end
+    S.lastT, S.lastS = throttle, steer
+
+    -- seat float writes (games whose chassis reads the seat directly)
     local sp = seat()
-    if S.driveMode == 'seat' and sp and sp:IsA('VehicleSeat') then
+    if sp and sp:IsA('VehicleSeat') then
         pcall(function()
             sp.ThrottleFloat = throttle
             sp.SteerFloat = steer
-            sp.Throttle = throttle > 0.15 and 1 or (throttle < -0.15 and -1 or 0)
-            sp.Steer = steer > 0.3 and 1 or (steer < -0.3 and -1 or 0)
         end)
-    else
-        vimKey(Enum.KeyCode.W, throttle > 0.15)
-        vimKey(Enum.KeyCode.S, throttle < -0.15)
-        vimKey(Enum.KeyCode.D, steer > 0.35)
-        vimKey(Enum.KeyCode.A, steer < -0.35)
     end
+
+    -- pwm key simulation (games that read player input) -- both always
+    -- active; whichever channel the game listens to wins
+    vimKey(Enum.KeyCode.W, pwmOn(math.clamp(throttle, 0, 1)))
+    vimKey(Enum.KeyCode.S, pwmOn(math.clamp(-throttle, 0, 1)))
+    vimKey(Enum.KeyCode.D, pwmOn(math.clamp(steer, 0, 1)))
+    vimKey(Enum.KeyCode.A, pwmOn(math.clamp(-steer, 0, 1)))
 end
 local function releaseDrive()
     local sp = seat()
@@ -679,7 +693,6 @@ function startPlayback(entry)
     S.playFile = entry.file
     S.playIdx = startIdx
     S.playStart = os.clock()
-    S.driveMode = 'seat'
     S.blocked = nil
     S.clearSince = nil
     S.stuckSince = nil
@@ -773,12 +786,14 @@ function startPlayback(entry)
             return
         end
 
-        -- pure pursuit steering
+        -- pure pursuit steering. authority shrinks as speed grows so
+        -- high-speed corrections stay gentle and low-speed turns get full lock
         local L = math.clamp(LOOKAHEAD_MIN + spd * 0.30, LOOKAHEAD_MIN, LOOKAHEAD_MAX)
         local target = lookaheadPoint(pts, idx, L)
         local rel = sp2.CFrame:PointToObjectSpace(target)
         local angle = math.atan2(rel.X, -rel.Z)
-        local steer = math.clamp(angle / math.rad(30), -1, 1)
+        local steerDiv = math.rad(26) * (1 + spd / 45)
+        local steer = math.clamp(angle / steerDiv, -1, 1)
 
         -- target speed: recorded profile x multiplier x learned factor, curve slowdown
         local recSpd = pts[math.min(idx + 4, #pts)][4] or 16
@@ -792,17 +807,15 @@ function startPlayback(entry)
             steer = math.clamp(steer * 1.6, -1, 1)
         end
 
-        local throttle = math.clamp((targetSpd - spd) / 8, -1, 1)
+        -- throttle: proportional band, full send when well under target
+        local throttle = math.clamp((targetSpd - spd) / 5, -1, 1)
+        if spd < targetSpd * 0.5 then throttle = 1 end
         applyDrive(throttle, steer)
 
-        -- stuck detection -> vim fallback
+        -- stuck detection
         if throttle > 0.7 and spd < 1.5 then
             stuckT = stuckT + dt
-            if stuckT > 2 and S.driveMode == 'seat' then
-                S.driveMode = 'vim'
-                stuckT = 0
-                toast('seat control not moving vehicle — switching to key simulation', C.YELLOW)
-            elseif stuckT > 6 then
+            if stuckT > 5 then
                 stuckT = 0
                 toast('vehicle appears stuck', C.YELLOW)
             end
@@ -1309,7 +1322,7 @@ function setPlayStatus(status, idx, total, spd, pts)
         end
     end
     local eta = spd > 2 and fmtTime(remaining / spd) or '--:--'
-    local line = status or ('mode     ' .. S.driveMode)
+    local line = status or string.format('ctl      t %+.2f  s %+.2f', S.lastT, S.lastS)
     playInfo.Text = string.format('%d%%  -  %s\nspeed    %d mph\neta      %s\ntime     %s',
         math.floor(prog * 100), fmtDist(remaining), mph(spd), eta, fmtTime(os.clock() - S.playStart))
         .. '\n' .. line
