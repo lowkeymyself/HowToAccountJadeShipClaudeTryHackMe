@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.8 -- scan auto-load on startup (rejoin-proof, loud errors),
-           velocity-only reverse (no gear shifting), path-direction
-           caution rays (pre-slow before stuck), faster road cruise
+    v4.9 -- reroutes that actually go around (hit-point fencing, smoothing
+           respects fences), sustained-steer braking (no spin-outs),
+           tight-spot side rays (slow in cluttered streets)
 ]]
 
 -- ============================================================
@@ -98,8 +98,9 @@ local S = {
     routeDest   = nil,      -- destination Vector3 of the active route
     blockCells  = {},       -- "cx,cz" -> expiry: cells fenced off by reroutes
     speedMult   = 1.0,
-    blocked     = nil,      -- {name=, class=, since=}
+    blocked     = nil,      -- {name=, class=, since=, pos=}
     caution     = nil,      -- distance to a far on-line obstacle (pre-slow)
+    tight       = nil,      -- nearest side obstacle when boxed in (slow)
     clearSince  = nil,
     stuckSince  = nil,
     bucketErr   = {},       -- bucket -> max cross-track error this run
@@ -663,7 +664,7 @@ local function scanAhead(sp, pts, idx)
     local origin = sp.Position + Vector3.new(0, 2, 0)
 
     refreshRayFilter({ playFolder })
-    local best, bestD
+    local best, bestD, bestP
     for _, dir in ipairs(dirs) do
         for _, off in ipairs({ 0, 1.6, -1.6 }) do
             local r = workspace:Raycast(origin + right * off, dir * range, rayParams)
@@ -679,12 +680,12 @@ local function scanAhead(sp, pts, idx)
                 end
                 if minLat < OBST_CORRIDOR then
                     local dist = (hitP - sp.Position).Magnitude
-                    if not bestD or dist < bestD then best, bestD = r.Instance, dist end
+                    if not bestD or dist < bestD then best, bestD, bestP = r.Instance, dist, hitP end
                 end
             end
         end
     end
-    return best, bestD
+    return best, bestD, bestP
 end
 
 -- ============================================================
@@ -1393,6 +1394,10 @@ function Scan.route(fromPos, toPos)
             local z = math.floor(a[2] + dz * t + 0.5)
             local y = grid[scanKey(x, z)]
             if not y or math.abs(y - prevY) > 4 then return false end
+            -- smoothing must not straighten routes back through cells the
+            -- reroute system fenced off
+            local bc = S.blockCells[scanKey(x, z)]
+            if bc and bc > os.clock() then return false end
             if not grid[scanKey(x + px, z + pz)] or not grid[scanKey(x - px, z - pz)] then
                 return false
             end
@@ -1589,6 +1594,7 @@ function startPlayback(entry)
     local lastMoveCheck, stuckT = os.clock(), 0
     local reversingUntil = 0
     local endParkT = 0
+    local steerHoldT = 0
 
     playConn = bind(RunService.Heartbeat:Connect(function(dt)
         if S.mode ~= 'playing' then return end
@@ -1648,13 +1654,35 @@ function startPlayback(entry)
         obstAcc = obstAcc + dt
         if obstAcc >= OBST_TICK then
             obstAcc = 0
-            local blocker, bDist = scanAhead(sp2, pts, idx)
+            local blocker, bDist, bPos = scanAhead(sp2, pts, idx)
             -- two-zone response: far hit on the line = caution (slow down
             -- toward it), close hit = full brake-and-wait
             S.caution = nil
             if blocker and bDist and bDist > math.clamp(spd * 1.1, 12, 45) then
                 S.caution = bDist
                 blocker = nil
+            end
+            -- ambient tightness: short side rays -- narrow streets and
+            -- cluttered spots get driven slowly
+            do
+                local f2 = Vector3.new(sp2.CFrame.LookVector.X, 0, sp2.CFrame.LookVector.Z)
+                if f2.Magnitude > 0.1 then
+                    f2 = f2.Unit
+                    local hits, minD = 0, math.huge
+                    for _, ang in ipairs({ -90, -40, 40, 90 }) do
+                        local a = math.rad(ang)
+                        local dirR = Vector3.new(
+                            f2.X * math.cos(a) - f2.Z * math.sin(a), 0,
+                            f2.X * math.sin(a) + f2.Z * math.cos(a))
+                        local r2 = workspace:Raycast(sp2.Position + Vector3.new(0, 2, 0), dirR * 9, rayParams)
+                        if r2 and r2.Instance.CanCollide and r2.Normal.Y <= 0.6 then
+                            hits = hits + 1
+                            local d2 = (r2.Position - sp2.Position).Magnitude
+                            if d2 < minD then minD = d2 end
+                        end
+                    end
+                    S.tight = (hits >= 2) and minD or nil
+                end
             end
             if blocker then
                 S.clearSince = nil
@@ -1666,6 +1694,8 @@ function startPlayback(entry)
                         since = os.clock(),
                     }
                 end
+                S.blocked.pos = bPos -- fence around the HIT POINT, not the
+                                     -- instance center (walls are long)
             elseif S.blocked then
                 S.clearSince = S.clearSince or os.clock()
                 if os.clock() - S.clearSince >= OBST_CLEAR_TIME then
@@ -1694,13 +1724,13 @@ function startPlayback(entry)
             -- off its cells in the grid and recompute the route around it
             if S.blocked.class == 'static' and os.clock() - S.blocked.since > 12 then
                 if S.routeDest and routeAndDrive then
-                    local bp
-                    pcall(function() bp = S.blocked.inst.Position end)
+                    local bp = S.blocked.pos
+                    if not bp then pcall(function() bp = S.blocked.inst.Position end) end
                     if bp then
                         local bx = math.floor(bp.X / Scan.CELL + 0.5)
                         local bz = math.floor(bp.Z / Scan.CELL + 0.5)
-                        for dx = -2, 2 do
-                            for dz = -2, 2 do
+                        for dx = -3, 3 do
+                            for dz = -3, 3 do
                                 S.blockCells[(bx + dx) .. ',' .. (bz + dz)] = os.clock() + 300
                             end
                         end
@@ -1848,6 +1878,21 @@ function startPlayback(entry)
         -- instead of driving into a panic stop
         if S.caution then
             targetSpd = math.min(targetSpd, math.max(S.caution * 0.35, 8))
+        end
+        -- tight spot: objects close on both sides -- creep through
+        if S.tight then
+            targetSpd = math.min(targetSpd, 10 + S.tight * 2.2)
+        end
+        -- sustained hard steering at speed = the correction is losing the
+        -- race. slow = turn as long as you like; fast = brake INTO the
+        -- correction until the wheel relaxes (spin-out prevention)
+        if math.abs(steer) > 0.45 and spd > 25 then
+            steerHoldT = steerHoldT + dt
+        else
+            steerHoldT = math.max(0, steerHoldT - dt * 2)
+        end
+        if steerHoldT > 0.6 then
+            targetSpd = math.min(targetSpd, math.max(spd * 0.8, 14))
         end
 
         -- throttle: proportional band with a firm floor -- tiny pwm duties
