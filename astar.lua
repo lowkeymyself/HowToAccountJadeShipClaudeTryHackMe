@@ -1,8 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.5 -- dead-center following: humanoid sits literally above the line,
-           hot low-end cross-track gain + stronger yaw damping
+    v1.6 -- predictive steering (leads corrections ~0.35s like a human),
+           hardcoded reverse burst when stuck
 ]]
 
 -- ============================================================
@@ -712,6 +712,7 @@ function startPlayback(entry)
     toast('driving "' .. tostring(data.name) .. '" — ' .. fmtDist(totalDist), C.GREEN)
 
     local lastMoveCheck, stuckT = os.clock(), 0
+    local reversingUntil = 0
 
     playConn = bind(RunService.Heartbeat:Connect(function(dt)
         if S.mode ~= 'playing' then return end
@@ -795,6 +796,22 @@ function startPlayback(entry)
             return
         end
 
+        -- stuck recovery: hardcoded reverse burst, then resume the path
+        if os.clock() < reversingUntil then
+            applyDrive(-1, 0)
+            local lv = sp2.CFrame.LookVector
+            local back = Vector3.new(-lv.X, 0, -lv.Z)
+            if back.Magnitude > 0.1 then
+                back = back.Unit
+                local vel = sp2.AssemblyLinearVelocity
+                if vel:Dot(back) < 8 then
+                    sp2.AssemblyLinearVelocity = vel + back * (20 * dt)
+                end
+            end
+            setPlayStatus('reversing -- unsticking', idx, #pts, spd, pts)
+            return
+        end
+
         -- pd pure pursuit steering:
         --  p: squared response -- small errors get micro corrections,
         --     real turns still reach full lock
@@ -811,9 +828,10 @@ function startPlayback(entry)
         local p = x * (0.4 + 0.6 * math.abs(x))
         local yawDamp = math.clamp(sp2.AssemblyAngularVelocity.Y * 0.42, -0.7, 0.7)
 
-        -- cross-track steering: the humanoid must sit literally above the
-        -- line. hot low-end gain pulls sub-stud offsets dead center,
-        -- distance still scales it up to near-full lock
+        -- predictive cross-track steering: correct based on where the
+        -- velocity is carrying us (~0.35s ahead), not where we are.
+        -- drifting away -> counters early before going wide. converging
+        -- fast -> eases off before crossing the line. like a human.
         --   0.25 studs -> ~0.06   1 stud -> ~0.26   2 -> ~0.62   3+ -> 0.90
         local ct = 0
         do
@@ -824,7 +842,10 @@ function startPlayback(entry)
                 d = d.Unit
                 local rightOf = Vector3.new(-d.Z, 0, d.X)
                 local lat = Vector3.new(pos.X - a[1], 0, pos.Z - a[3]):Dot(rightOf)
-                ct = -math.clamp(lat * 0.22 * (1 + math.abs(lat) / 5), -0.9, 0.9)
+                local vel = sp2.AssemblyLinearVelocity
+                local latVel = Vector3.new(vel.X, 0, vel.Z):Dot(rightOf)
+                local predLat = lat + latVel * 0.35
+                ct = -math.clamp(predLat * 0.22 * (1 + math.abs(predLat) / 5), -0.9, 0.9)
             end
         end
         local steer = math.clamp(p + yawDamp + ct, -1, 1)
@@ -865,12 +886,13 @@ function startPlayback(entry)
             end
         end
 
-        -- stuck detection
+        -- stuck detection -> hardcoded reverse burst
         if throttle > 0.7 and spd < 1.5 then
             stuckT = stuckT + dt
-            if stuckT > 5 then
+            if stuckT > 3 then
                 stuckT = 0
-                toast('vehicle appears stuck', C.YELLOW)
+                reversingUntil = os.clock() + 1.2
+                toast('vehicle appears stuck — reversing', C.YELLOW)
             end
         else
             stuckT = 0
