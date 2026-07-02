@@ -1,8 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.6 -- predictive steering (leads corrections ~0.35s like a human),
-           hardcoded reverse burst when stuck
+    v1.7 -- corner anticipation: brakes before turns via curvature scan,
+           speed-scaled centering + hard steer ceiling at velocity
 ]]
 
 -- ============================================================
@@ -653,6 +653,31 @@ local function lookaheadPoint(pts, idx, dist)
     return Vector3.new(last[1], last[2], last[3]), #pts
 end
 
+-- max curvature (rad/stud) over the braking distance ahead -- used to
+-- slow down BEFORE corners instead of discovering them mid-turn
+local function maxCurvatureAhead(pts, idx, spd)
+    local scanDist = math.clamp(spd * 1.8, 20, 100)
+    local stride = 4
+    local acc, maxK, prevDir = 0, 0, nil
+    local i = idx
+    while i + stride <= #pts and acc < scanDist do
+        local seg = Vector3.new(pts[i + stride][1] - pts[i][1], 0, pts[i + stride][3] - pts[i][3])
+        local len = seg.Magnitude
+        if len > 0.3 then
+            local dir = seg / len
+            if prevDir then
+                local turn = math.acos(math.clamp(dir:Dot(prevDir), -1, 1))
+                local k = turn / len
+                if k > maxK then maxK = k end
+            end
+            prevDir = dir
+        end
+        acc = acc + len
+        i = i + stride
+    end
+    return maxK
+end
+
 local function drawPlayPath(pts)
     clearPlayPath()
     -- draw every other segment to keep part count sane on long paths
@@ -846,15 +871,28 @@ function startPlayback(entry)
                 local latVel = Vector3.new(vel.X, 0, vel.Z):Dot(rightOf)
                 local predLat = lat + latVel * 0.35
                 ct = -math.clamp(predLat * 0.22 * (1 + math.abs(predLat) / 5), -0.9, 0.9)
+                -- full centering authority at cruise is a spin at speed
+                ct = ct / (1 + spd / 55)
             end
         end
-        local steer = math.clamp(p + yawDamp + ct, -1, 1)
+        -- hard ceiling: at high speed full lock is never survivable
+        local steerCap = math.clamp(1.25 - spd / 110, 0.35, 1)
+        local steer = math.clamp(p + yawDamp + ct, -steerCap, steerCap)
 
         -- target speed: recorded profile x multiplier x learned factor, curve slowdown
         local recSpd = pts[math.min(idx + 4, #pts)][4] or 16
         local learned = (S.playData.learned and S.playData.learned[bucket]) or 1
         local curveCut = 1 - math.min(math.abs(angle) / math.rad(60), 1) * 0.5
         local targetSpd = math.max(6, recSpd * S.speedMult * learned * curveCut)
+
+        -- corner anticipation: brake BEFORE the turn. curvature ahead caps
+        -- entry speed via v = sqrt(grip / k), so tight corners are entered
+        -- already slowed instead of at full recorded speed
+        local k = maxCurvatureAhead(pts, idx, spd)
+        if k > 0.002 then
+            local vMax = math.sqrt(24 / k)
+            targetSpd = math.min(targetSpd, math.max(vMax, 8))
+        end
 
         -- recovery mode: too far off line -- slow down, let the controller
         -- steer naturally (boosting gain here is what caused spirals)
