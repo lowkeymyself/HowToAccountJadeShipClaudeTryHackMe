@@ -1,8 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.8 -- offset-aware authority: gentle when on the line, full pull
-           when genuinely off it -- accuracy at any speed
+    v1.9 -- natural braking envelope (brake early when fast, done before
+           turn-in), dull bends don't slow, faster hairpins, arrival fix
 ]]
 
 -- ============================================================
@@ -653,12 +653,15 @@ local function lookaheadPoint(pts, idx, dist)
     return Vector3.new(last[1], last[2], last[3]), #pts
 end
 
--- max curvature (rad/stud) over the braking distance ahead -- used to
--- slow down BEFORE corners instead of discovering them mid-turn
+-- sharpest curvature (rad/stud) ahead and its distance -- used to brake
+-- on a natural envelope BEFORE corners. long stride (6 samples) filters
+-- recording noise so gentle bends don't read as sharp corners
 local function maxCurvatureAhead(pts, idx, spd)
-    local scanDist = math.clamp(spd * 1.8, 20, 100)
-    local stride = 4
+    -- scan the true braking distance for the current speed, plus margin
+    local scanDist = math.clamp(spd * spd / 44 + 30, 30, 160)
+    local stride = 6
     local acc, maxK, prevDir = 0, 0, nil
+    local dAtMax = scanDist
     local i = idx
     while i + stride <= #pts and acc < scanDist do
         local seg = Vector3.new(pts[i + stride][1] - pts[i][1], 0, pts[i + stride][3] - pts[i][3])
@@ -668,14 +671,14 @@ local function maxCurvatureAhead(pts, idx, spd)
             if prevDir then
                 local turn = math.acos(math.clamp(dir:Dot(prevDir), -1, 1))
                 local k = turn / len
-                if k > maxK then maxK = k end
+                if k > maxK then maxK = k; dAtMax = acc end
             end
             prevDir = dir
         end
         acc = acc + len
         i = i + stride
     end
-    return maxK
+    return maxK, dAtMax
 end
 
 local function drawPlayPath(pts)
@@ -738,6 +741,7 @@ function startPlayback(entry)
 
     local lastMoveCheck, stuckT = os.clock(), 0
     local reversingUntil = 0
+    local endParkT = 0
 
     playConn = bind(RunService.Heartbeat:Connect(function(dt)
         if S.mode ~= 'playing' then return end
@@ -761,12 +765,23 @@ function startPlayback(entry)
             S.bucketErr[bucket] = err
         end
 
-        -- arrival check
+        -- arrival check: generous window near the end, plus a "parked at
+        -- destination" clause -- stopped close to the end counts as done
         local last = pts[#pts]
         local dEnd = (Vector3.new(last[1], last[2], last[3]) - pos).Magnitude
-        if idx >= #pts - 3 and dEnd < ARRIVE_DIST then
+        local nearEnd = idx >= #pts - 10
+        if (nearEnd and dEnd < 14) or dEnd < 7 then
             stopPlayback(nil, true)
             return
+        end
+        if nearEnd and dEnd < 25 and spd < 2.5 then
+            endParkT = endParkT + dt
+            if endParkT > 1.2 then
+                stopPlayback(nil, true)
+                return
+            end
+        else
+            endParkT = 0
         end
 
         -- hard off-path abort
@@ -887,16 +902,20 @@ function startPlayback(entry)
         -- target speed: recorded profile x multiplier x learned factor, curve slowdown
         local recSpd = pts[math.min(idx + 4, #pts)][4] or 16
         local learned = (S.playData.learned and S.playData.learned[bucket]) or 1
-        local curveCut = 1 - math.min(math.abs(angle) / math.rad(60), 1) * 0.5
+        local curveCut = 1 - math.min(math.abs(angle) / math.rad(60), 1) * 0.35
         local targetSpd = math.max(6, recSpd * S.speedMult * learned * curveCut)
 
-        -- corner anticipation: brake BEFORE the turn. curvature ahead caps
-        -- entry speed via v = sqrt(grip / k), so tight corners are entered
-        -- already slowed instead of at full recorded speed
-        local k = maxCurvatureAhead(pts, idx, spd)
-        if k > 0.002 then
-            local vMax = math.sqrt(24 / k)
-            targetSpd = math.min(targetSpd, math.max(vMax, 8))
+        -- corner anticipation: natural braking envelope, like a driver who
+        -- saw the turn coming. corner speed from grip physics; allowed
+        -- speed NOW follows v = sqrt(vc^2 + 2*a*d) -- big early braking
+        -- when fast, tapering off, corner speed reached ~12 studs early.
+        -- k threshold ignores dull bends entirely (no fake slowdowns)
+        local k, dCorner = maxCurvatureAhead(pts, idx, spd)
+        if k > 0.004 then
+            local vCorner = math.max(math.sqrt(30 / k), 11)
+            local dBrake = math.max(dCorner - 12, 0)
+            local vAllowed = math.sqrt(vCorner * vCorner + 2 * 22 * dBrake)
+            targetSpd = math.min(targetSpd, vAllowed)
         end
 
         -- recovery mode: too far off line -- slow down, let the controller
