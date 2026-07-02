@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.2 -- car-body-aware routing: wall-hug cost penalty steers routes
-           to the middle of open space, corridor smoothing keeps a
-           car-width of clearance on shortcuts
+    v4.5 -- road ground truth (workspace.roads tagging, 2x cheaper on
+           streets, off-road speed caps) + massive ui overhaul: riced
+           wm chrome, workspace tabs, waybar status, live k-chip dot
 ]]
 
 -- ============================================================
@@ -335,8 +335,23 @@ local function tw(o, props, t, style)
     return tween
 end
 local function hoverable(btn, base, hot)
-    btn.MouseEnter:Connect(function() tw(btn, { BackgroundColor3 = hot }, 0.12) end)
-    btn.MouseLeave:Connect(function() tw(btn, { BackgroundColor3 = base }, 0.18) end)
+    local st = btn:FindFirstChildOfClass('UIStroke')
+    local stBase = st and st.Color
+    btn.MouseEnter:Connect(function()
+        tw(btn, { BackgroundColor3 = hot }, 0.12)
+        if st then tw(st, { Color = C.BORDER2 }, 0.12) end
+    end)
+    btn.MouseLeave:Connect(function()
+        tw(btn, { BackgroundColor3 = base }, 0.18)
+        if st then tw(st, { Color = stBase }, 0.18) end
+    end)
+    -- press flash
+    btn.MouseButton1Down:Connect(function()
+        tw(btn, { BackgroundColor3 = Color3.fromRGB(55, 55, 55) }, 0.05)
+    end)
+    btn.MouseButton1Up:Connect(function()
+        tw(btn, { BackgroundColor3 = hot }, 0.2)
+    end)
 end
 
 -- // toast system
@@ -355,13 +370,14 @@ local function toast(msg, accent)
         BackgroundColor3 = C.BG1, Size = UDim2.new(1, 0, 0, 34),
         BackgroundTransparency = 1, Parent = toastHolder,
     }, {
-        corner(4), stroke(C.BORDER),
+        corner(5), stroke(C.BORDER),
+        vgradient(Color3.fromRGB(24, 24, 24), Color3.fromRGB(13, 13, 13)),
         new('Frame', { BackgroundColor3 = accent or C.WHITE, Size = UDim2.new(0, 2, 1, -10), Position = UDim2.new(0, 5, 0, 5), BorderSizePixel = 0 }),
         new('TextLabel', {
             BackgroundTransparency = 1, Font = FONT, TextSize = 12, TextColor3 = C.TEXT,
             TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
             Position = UDim2.new(0, 16, 0, 0), Size = UDim2.new(1, -22, 1, 0),
-            Text = string.lower(tostring(msg)), TextTransparency = 1,
+            Text = '> ' .. string.lower(tostring(msg)), TextTransparency = 1,
         }),
     })
     local lbl = t:FindFirstChildOfClass('TextLabel')
@@ -886,6 +902,8 @@ end
 local Scan = {
     CELL = 6,
     grid = nil,      -- "cx,cz" -> surface y
+    roads = {},      -- "cx,cz" -> true when surface belongs to workspace.roads
+    roadCount = 0,
     count = 0,
     mats = {},       -- learned road-family materials
     running = false,
@@ -901,6 +919,22 @@ local SCAN_MAX_CELLS = 900000    -- runaway guard
 
 local function scanKey(cx, cz) return cx .. ',' .. cz end
 
+-- swf keeps all road parts under workspace.roads -- perfect ground truth.
+-- generic: any ancestor named "roads"/"road" tags the cell as road
+local roadInstCache = setmetatable({}, { __mode = 'k' })
+local function isRoadInst(inst)
+    local c = roadInstCache[inst]
+    if c ~= nil then return c end
+    local m, road = inst, false
+    while m and m ~= workspace do
+        local nm = string.lower(m.Name)
+        if nm == 'roads' or nm == 'road' then road = true break end
+        m = m.Parent
+    end
+    roadInstCache[inst] = road
+    return road
+end
+
 function Scan.loadFile()
     if not FS.ok then return false end
     local ok, data = pcall(function()
@@ -908,8 +942,18 @@ function Scan.loadFile()
     end)
     if not ok or not data or not data.cols then return false end
     Scan.grid, Scan.count, Scan.mats = {}, 0, {}
+    Scan.roads, Scan.roadCount = {}, 0
     Scan.CELL = data.cell or 6
     for _, m in ipairs(data.mats or {}) do Scan.mats[m] = true end
+    for cxs, runs in pairs(data.roads or {}) do
+        local cx = tonumber(cxs)
+        for _, run in ipairs(runs) do
+            for i = 0, run[2] - 1 do
+                Scan.roads[scanKey(cx, run[1] + i)] = true
+                Scan.roadCount = Scan.roadCount + 1
+            end
+        end
+    end
     for cxs, runs in pairs(data.cols) do
         local cx = tonumber(cxs)
         for _, run in ipairs(runs) do
@@ -955,11 +999,36 @@ function Scan.saveFile()
         end
         out[tostring(cx)] = runs
     end
+    -- road cells: simple run-length by column
+    local roadOut = {}
+    do
+        local rcols = {}
+        for key in pairs(Scan.roads) do
+            local cxs, czs = key:match('(-?%d+),(-?%d+)')
+            local cx, cz = tonumber(cxs), tonumber(czs)
+            rcols[cx] = rcols[cx] or {}
+            table.insert(rcols[cx], cz)
+        end
+        for cx, list in pairs(rcols) do
+            table.sort(list)
+            local runs, run = {}, nil
+            for _, cz in ipairs(list) do
+                if run and cz == run[1] + run[2] then
+                    run[2] = run[2] + 1
+                else
+                    if run then table.insert(runs, run) end
+                    run = { cz, 1 }
+                end
+            end
+            if run then table.insert(runs, run) end
+            roadOut[tostring(cx)] = runs
+        end
+    end
     local mats = {}
     for m in pairs(Scan.mats) do table.insert(mats, m) end
     return (pcall(function()
         writefile(gameFolder .. '/scan.json',
-            HttpService:JSONEncode({ cell = Scan.CELL, mats = mats, cols = out }))
+            HttpService:JSONEncode({ cell = Scan.CELL, mats = mats, cols = out, roads = roadOut }))
     end))
 end
 
@@ -1056,6 +1125,10 @@ function Scan.step()
                 local up = workspace:Raycast(hit.Position + Vector3.new(0, 0.7, 0), Vector3.new(0, 4.5, 0), Scan.rp)
                 if not up then
                     local y = hit.Position.Y
+                    if isRoadInst(hit.Instance) and not Scan.roads[key] then
+                        Scan.roads[key] = true
+                        Scan.roadCount = Scan.roadCount + 1
+                    end
                     if not Scan.grid[key] then
                         Scan.grid[key] = y
                         Scan.count = Scan.count + 1
@@ -1126,6 +1199,7 @@ end
 function Scan.clear()
     Scan.stop(false)
     Scan.grid, Scan.count, Scan.mats = nil, 0, {}
+    Scan.roads, Scan.roadCount = {}, 0
     pcall(function() delfile(gameFolder .. '/scan.json') end)
     toast('scan wiped', C.MUT)
 end
@@ -1238,7 +1312,10 @@ function Scan.route(fromPos, toPos)
                     ny = nil
                 end
                 if ny then
-                    local ng = g[ck] + d[3] + hugPenalty(nx, nz, nk)
+                    -- roads (workspace.roads ground truth) are ~2x cheaper:
+                    -- take streets like a citizen, cut grass only when smart
+                    local mult = Scan.roads[nk] and 1 or 1.9
+                    local ng = g[ck] + d[3] * mult + hugPenalty(nx, nz, nk)
                     if not g[nk] or ng < g[nk] then
                         g[nk] = ng
                         from[nk] = ck
@@ -1304,9 +1381,11 @@ function Scan.route(fromPos, toPos)
         local by = grid[scanKey(b[1], b[2])]
         local segLen = math.sqrt((bx - ax) ^ 2 + (bz - az) ^ 2)
         local steps = math.max(math.floor(segLen / 3), 1)
+        -- cruise faster on tagged roads, careful off-road
+        local segSpd = Scan.roads[scanKey(a[1], a[2])] and 35 or 20
         for s = (wi == 1 and 0 or 1), steps do
             local t = s / steps
-            table.insert(pts, { ax + (bx - ax) * t, ay + (by - ay) * t + 1, az + (bz - az) * t, 30 })
+            table.insert(pts, { ax + (bx - ax) * t, ay + (by - ay) * t + 1, az + (bz - az) * t, segSpd })
         end
     end
     return pts
@@ -1766,14 +1845,30 @@ local kBtn = new('TextButton', {
     Name = 'KIcon',
     AnchorPoint = Vector2.new(0.5, 0),
     Position = UDim2.new(0.5, 0, 0, 10),
-    Size = UDim2.new(0, 36, 0, 36),
+    Size = UDim2.new(0, 52, 0, 30),
     BackgroundColor3 = C.BG1,
-    Text = 'K',
-    Font = FONTB, TextSize = 18, TextColor3 = C.TEXT,
+    Text = 'k*',
+    Font = FONTB, TextSize = 15, TextColor3 = C.TEXT,
     AutoButtonColor = false,
     Parent = gui,
 }, { corner(6), stroke(C.BORDER), vgradient(Color3.fromRGB(26, 26, 26), Color3.fromRGB(12, 12, 12)) })
 hoverable(kBtn, C.BG1, C.BG3)
+-- live status dot on the k chip: dim=idle, green=recording,
+-- white=driving, yellow=scanning/rewinding
+local kDot = new('Frame', {
+    BackgroundColor3 = C.DIM, BorderSizePixel = 0,
+    AnchorPoint = Vector2.new(1, 0.5),
+    Position = UDim2.new(1, -7, 0.5, 0), Size = UDim2.new(0, 5, 0, 5),
+    Parent = kBtn,
+}, { corner(3) })
+bind(RunService.Heartbeat:Connect(function()
+    local c = C.DIM
+    if S.mode == 'recording' then c = C.GREEN
+    elseif S.mode == 'playing' then c = C.WHITE
+    elseif S.mode == 'rewinding' then c = C.YELLOW end
+    if Scan.running then c = C.YELLOW end
+    kDot.BackgroundColor3 = c
+end))
 
 -- ============================================================
 -- // ui: fullscreen overlay + panel
@@ -1789,52 +1884,64 @@ local panel = new('Frame', {
     Name = 'Panel',
     AnchorPoint = Vector2.new(0.5, 0.5),
     Position = UDim2.new(0.5, 0, 0.5, 0),
-    Size = UDim2.new(0, 620, 0, 470),
+    Size = UDim2.new(0, 700, 0, 520),
     BackgroundColor3 = C.BG0,
     Parent = overlay,
-}, { corner(8), stroke(C.BORDER), vgradient(Color3.fromRGB(20, 20, 20), Color3.fromRGB(8, 8, 8)) })
+}, { corner(10), stroke(C.BORDER), vgradient(Color3.fromRGB(21, 21, 21), Color3.fromRGB(7, 7, 7)) })
 local panelScale = new('UIScale', { Scale = 1, Parent = panel })
 
--- title bar
+-- title bar (fake wm window chrome)
 local titleBar = new('Frame', {
-    BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 44), Parent = panel,
+    BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 46), Parent = panel,
 })
+new('Frame', { -- accent dot
+    BackgroundColor3 = C.WHITE, BorderSizePixel = 0,
+    Position = UDim2.new(0, 18, 0.5, -3), Size = UDim2.new(0, 6, 0, 6), Parent = titleBar,
+}, { corner(3) })
 new('TextLabel', {
     BackgroundTransparency = 1, Font = FONTB, TextSize = 16, TextColor3 = C.TEXT,
     TextXAlignment = Enum.TextXAlignment.Left,
-    Position = UDim2.new(0, 18, 0, 0), Size = UDim2.new(0, 140, 1, 0),
+    Position = UDim2.new(0, 34, 0, 0), Size = UDim2.new(0, 140, 1, 0),
     Text = 'konstant a*', Parent = titleBar,
 })
 new('TextLabel', {
     BackgroundTransparency = 1, Font = FONT, TextSize = 11, TextColor3 = C.DIM,
     TextXAlignment = Enum.TextXAlignment.Left,
-    Position = UDim2.new(0, 128, 0, 1), Size = UDim2.new(0, 220, 1, 0),
-    Text = '// waypoint autodriver', Parent = titleBar,
+    Position = UDim2.new(0, 146, 0, 1), Size = UDim2.new(0, 260, 1, 0),
+    Text = '// autodriver suite', Parent = titleBar,
 })
+for di = 1, 2 do -- wm deco squares
+    new('Frame', {
+        BackgroundColor3 = di == 1 and C.BG3 or C.BORDER, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -50 - (di - 1) * 16, 0.5, 0),
+        Size = UDim2.new(0, 8, 0, 8), Parent = titleBar,
+    }, { corner(2) })
+end
 new('Frame', { -- title divider
     BackgroundColor3 = C.BORDER, BorderSizePixel = 0,
     Position = UDim2.new(0, 12, 1, -1), Size = UDim2.new(1, -24, 0, 1), Parent = titleBar,
 })
 local closeBtn = new('TextButton', {
-    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+    AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -14, 0.5, 0),
     Size = UDim2.new(0, 26, 0, 26), BackgroundColor3 = C.BG2,
     Font = FONT, TextSize = 13, TextColor3 = C.MUT, Text = 'x',
     AutoButtonColor = false, Parent = titleBar,
 }, { corner(4), stroke(C.BORDER) })
 hoverable(closeBtn, C.BG2, Color3.fromRGB(60, 25, 25))
 
--- tab chips (hyprland workspace style)
+-- workspace tabs (hyprland style: 1:record 2:load 3:scan)
 local tabRow = new('Frame', {
-    BackgroundTransparency = 1, Position = UDim2.new(0, 18, 0, 52),
-    Size = UDim2.new(1, -36, 0, 26), Parent = panel,
+    BackgroundTransparency = 1, Position = UDim2.new(0, 18, 0, 54),
+    Size = UDim2.new(1, -36, 0, 30), Parent = panel,
 }, { new('UIListLayout', { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
 
 local tabs, tabBtns, tabFrames = { 'record', 'load', 'scan' }, {}, {}
 local activeTab = 'record'
 
 local content = new('Frame', {
-    BackgroundTransparency = 1, Position = UDim2.new(0, 18, 0, 88),
-    Size = UDim2.new(1, -36, 1, -106), Parent = panel,
+    BackgroundTransparency = 1, Position = UDim2.new(0, 18, 0, 94),
+    Size = UDim2.new(1, -36, 1, -140), Parent = panel,
 })
 
 local function selectTab(name)
@@ -1842,23 +1949,61 @@ local function selectTab(name)
     for t, btn in pairs(tabBtns) do
         local on = (t == name)
         tw(btn, { BackgroundColor3 = on and C.BG3 or C.BG1, TextColor3 = on and C.TEXT or C.DIM }, 0.15)
-        btn:FindFirstChildOfClass('UIStroke').Color = on and C.BORDER2 or C.BORDER
+        local u = btn:FindFirstChild('U')
+        if u then
+            tw(u, { Size = on and UDim2.new(1, -14, 0, 2) or UDim2.new(0, 0, 0, 2) }, 0.22)
+        end
         tabFrames[t].Visible = on
     end
     if name == 'load' then refreshLoadList() end
+    -- content slide-in
+    local f = tabFrames[name]
+    f.Position = UDim2.new(0, 0, 0, 14)
+    tw(f, { Position = UDim2.new(0, 0, 0, 0) }, 0.24)
 end
 
 for i, t in ipairs(tabs) do
     local btn = new('TextButton', {
-        Size = UDim2.new(0, 88, 1, 0), BackgroundColor3 = C.BG1,
+        Size = UDim2.new(0, 96, 1, 0), BackgroundColor3 = C.BG1,
         Font = FONT, TextSize = 12, TextColor3 = C.DIM,
-        Text = '[ ' .. t .. ' ]', AutoButtonColor = false, LayoutOrder = i,
+        Text = i .. ':' .. t, AutoButtonColor = false, LayoutOrder = i,
         Parent = tabRow,
-    }, { corner(4), stroke(C.BORDER) })
+    }, { corner(5), stroke(C.BORDER) })
+    new('Frame', { -- animated underline
+        Name = 'U', BackgroundColor3 = C.WHITE, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -3),
+        Size = UDim2.new(0, 0, 0, 2), Parent = btn,
+    }, { corner(1) })
     tabBtns[t] = btn
     tabFrames[t] = new('Frame', { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 1, 0), Visible = false, Parent = content })
     btn.MouseButton1Click:Connect(function() selectTab(t) end)
 end
+
+-- waybar-style status bar (bottom of panel)
+local statusBar = new('Frame', {
+    BackgroundColor3 = C.BG1, Position = UDim2.new(0, 12, 1, -36),
+    Size = UDim2.new(1, -24, 0, 26), Parent = panel,
+}, { corner(5), stroke(C.BORDER), vgradient(Color3.fromRGB(20, 20, 20), Color3.fromRGB(13, 13, 13)) })
+local sbLeft = new('TextLabel', {
+    BackgroundTransparency = 1, Font = FONT, TextSize = 11, TextColor3 = C.MUT,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(0.6, 0, 1, 0),
+    Text = '', Parent = statusBar,
+})
+local sbRight = new('TextLabel', {
+    BackgroundTransparency = 1, Font = FONT, TextSize = 11, TextColor3 = C.DIM,
+    TextXAlignment = Enum.TextXAlignment.Right,
+    Position = UDim2.new(0.4, 0, 0, 0), Size = UDim2.new(0.6, -10, 1, 0),
+    Text = '', Parent = statusBar,
+})
+bind(RunService.Heartbeat:Connect(function()
+    if not overlay.Visible then return end
+    sbLeft.Text = 'mode ' .. S.mode .. (Scan.running and '  ·  scanning' or '')
+    sbRight.Text = string.format('cells %s (%s road)  ·  v4.5  ·  %s',
+        Scan.count > 0 and tostring(Scan.count) or '--',
+        Scan.roadCount and Scan.roadCount > 0 and tostring(Scan.roadCount) or '--',
+        os.date('%H:%M:%S'))
+end))
 
 -- // tile helper (bordered box, hyprland gaps vibe)
 local function tile(parent, pos, size, title)
@@ -1871,6 +2016,11 @@ local function tile(parent, pos, size, title)
             TextXAlignment = Enum.TextXAlignment.Left,
             Position = UDim2.new(0, 12, 0, 8), Size = UDim2.new(1, -24, 0, 14),
             Text = title, Parent = f,
+        })
+        new('Frame', { -- header rule filling the rest of the row
+            BackgroundColor3 = C.BORDER, BorderSizePixel = 0,
+            Position = UDim2.new(0, 20 + #title * 7, 0, 15),
+            Size = UDim2.new(1, -(32 + #title * 7), 0, 1), Parent = f,
         })
     end
     return f
@@ -2264,6 +2414,10 @@ local recHud = new('Frame', {
     Position = UDim2.new(1, 320, 0, 14), Size = UDim2.new(0, 240, 0, 148),
     BackgroundColor3 = C.BG0, Parent = gui,
 }, { corner(6), stroke(C.BORDER), vgradient(Color3.fromRGB(18, 18, 18), Color3.fromRGB(9, 9, 9)) })
+new('Frame', { -- left accent bar
+    BackgroundColor3 = C.GREEN, BorderSizePixel = 0,
+    Position = UDim2.new(0, 0, 0, 10), Size = UDim2.new(0, 2, 1, -20), Parent = recHud,
+})
 new('TextLabel', {
     BackgroundTransparency = 1, Font = FONTB, TextSize = 12, TextColor3 = C.TEXT,
     TextXAlignment = Enum.TextXAlignment.Left,
@@ -2343,6 +2497,10 @@ local playHud = new('Frame', {
     Position = UDim2.new(1, 320, 0, 14), Size = UDim2.new(0, 240, 0, 158),
     BackgroundColor3 = C.BG0, Parent = gui,
 }, { corner(6), stroke(C.BORDER), vgradient(Color3.fromRGB(18, 18, 18), Color3.fromRGB(9, 9, 9)) })
+new('Frame', { -- left accent bar
+    BackgroundColor3 = C.WHITE, BorderSizePixel = 0,
+    Position = UDim2.new(0, 0, 0, 10), Size = UDim2.new(0, 2, 1, -20), Parent = playHud,
+})
 local playTitle = new('TextLabel', {
     BackgroundTransparency = 1, Font = FONTB, TextSize = 12, TextColor3 = C.TEXT,
     TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
