@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v3.0 -- THE NETWORK UPDATE: record roads once ("save as road"),
-           a* routes over the road graph to any coordinate, rewind
-           keybind (hold R). real auto-driving, scan-by-driving.
+    v4.0 -- THE SCANNER: flood-fill maps every drivable surface in the
+           game (material-learning, saved to disk), grid a* + smoothing
+           routes to ANY scanned coordinate. network graph as fallback.
 ]]
 
 -- ============================================================
@@ -879,6 +879,355 @@ local function arcLen(si, i1, i2)
     return len
 end
 
+-- ============================================================
+-- // map scanner (option 2): drivable-surface flood fill + grid a*
+-- ============================================================
+local Scan = {
+    CELL = 6,
+    grid = nil,      -- "cx,cz" -> surface y
+    count = 0,
+    mats = {},       -- learned road-family materials
+    running = false,
+    checked = 0,
+    frontier = nil, fHead = 1, fTail = 0,
+    visited = nil,
+    startedAt = 0,
+    conn = nil,
+    rp = nil,
+}
+local SCAN_BUDGET = 250          -- cells per frame (2 raycasts each)
+local SCAN_MAX_CELLS = 900000    -- runaway guard
+
+local function scanKey(cx, cz) return cx .. ',' .. cz end
+
+function Scan.loadFile()
+    if not FS.ok then return false end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(gameFolder .. '/scan.json'))
+    end)
+    if not ok or not data or not data.cols then return false end
+    Scan.grid, Scan.count, Scan.mats = {}, 0, {}
+    Scan.CELL = data.cell or 6
+    for _, m in ipairs(data.mats or {}) do Scan.mats[m] = true end
+    for cxs, runs in pairs(data.cols) do
+        local cx = tonumber(cxs)
+        for _, run in ipairs(runs) do
+            local cz0, n, y0, y1 = run[1], run[2], run[3], run[4]
+            for i = 0, n - 1 do
+                local t = (n > 1) and i / (n - 1) or 0
+                Scan.grid[scanKey(cx, cz0 + i)] = y0 + (y1 - y0) * t
+                Scan.count = Scan.count + 1
+            end
+        end
+    end
+    return Scan.count > 0
+end
+
+function Scan.saveFile()
+    if not FS.ok or not Scan.grid then return false end
+    local cols = {}
+    for key, y in pairs(Scan.grid) do
+        local cxs, czs = key:match('(-?%d+),(-?%d+)')
+        local cx, cz = tonumber(cxs), tonumber(czs)
+        cols[cx] = cols[cx] or {}
+        table.insert(cols[cx], { cz, y })
+    end
+    local out = {}
+    for cx, list in pairs(cols) do
+        table.sort(list, function(a, b) return a[1] < b[1] end)
+        local runs, run = {}, nil
+        for _, e in ipairs(list) do
+            if run and e[1] == run.cz0 + run.n and math.abs(e[2] - run.lastY) <= 1.5 then
+                run.n = run.n + 1
+                run.lastY = e[2]
+            else
+                if run then
+                    table.insert(runs, { run.cz0, run.n,
+                        math.floor(run.y0 * 10) / 10, math.floor(run.lastY * 10) / 10 })
+                end
+                run = { cz0 = e[1], n = 1, y0 = e[2], lastY = e[2] }
+            end
+        end
+        if run then
+            table.insert(runs, { run.cz0, run.n,
+                math.floor(run.y0 * 10) / 10, math.floor(run.lastY * 10) / 10 })
+        end
+        out[tostring(cx)] = runs
+    end
+    local mats = {}
+    for m in pairs(Scan.mats) do table.insert(mats, m) end
+    return (pcall(function()
+        writefile(gameFolder .. '/scan.json',
+            HttpService:JSONEncode({ cell = Scan.CELL, mats = mats, cols = out }))
+    end))
+end
+
+function Scan.available()
+    if Scan.grid and Scan.count > 0 then return true end
+    return Scan.loadFile()
+end
+
+local function scanPush(cx, cz, refY)
+    Scan.fTail = Scan.fTail + 1
+    Scan.frontier[Scan.fTail] = { cx, cz, refY }
+end
+
+function Scan.stop(save)
+    Scan.running = false
+    if Scan.conn then Scan.conn:Disconnect() Scan.conn = nil end
+    if save and Scan.grid then
+        Scan.saveFile()
+        toast(('scan saved — %d drivable cells'):format(Scan.count), C.GREEN)
+    end
+end
+
+function Scan.step()
+    if not Scan.running then return end
+    local done = 0
+    while done < SCAN_BUDGET do
+        if Scan.fHead > Scan.fTail then
+            Scan.stop(true)
+            toast('scan complete — the whole connected surface is mapped', C.GREEN)
+            return
+        end
+        local item = Scan.frontier[Scan.fHead]
+        Scan.frontier[Scan.fHead] = nil
+        Scan.fHead = Scan.fHead + 1
+        local cx, cz, refY = item[1], item[2], item[3]
+        local key = scanKey(cx, cz)
+        if not Scan.visited[key] then
+            Scan.visited[key] = true
+            Scan.checked = Scan.checked + 1
+            local wx, wz = cx * Scan.CELL, cz * Scan.CELL
+            local hit = workspace:Raycast(Vector3.new(wx, refY + 30, wz), Vector3.new(0, -80, 0), Scan.rp)
+            if hit and hit.Normal.Y >= 0.92 and Scan.mats[hit.Material.Name]
+               and math.abs(hit.Position.Y - refY) <= 5 then
+                -- clearance: nothing solid sitting on the surface
+                local up = workspace:Raycast(hit.Position + Vector3.new(0, 0.7, 0), Vector3.new(0, 5.5, 0), Scan.rp)
+                if not up then
+                    local y = hit.Position.Y
+                    if not Scan.grid[key] then
+                        Scan.grid[key] = y
+                        Scan.count = Scan.count + 1
+                        if Scan.count >= SCAN_MAX_CELLS then
+                            Scan.stop(true)
+                            toast('scan hit the cell cap — saved what we have', C.YELLOW)
+                            return
+                        end
+                    end
+                    scanPush(cx + 1, cz, y)
+                    scanPush(cx - 1, cz, y)
+                    scanPush(cx, cz + 1, y)
+                    scanPush(cx, cz - 1, y)
+                end
+            end
+        end
+        done = done + 1
+    end
+end
+
+function Scan.start()
+    if Scan.running then toast('already scanning', C.RED) return end
+    local r = hrp()
+    if not r then toast('no character', C.RED) return end
+    if not Scan.grid then Scan.loadFile() end
+    Scan.grid = Scan.grid or {}
+
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.IgnoreWater = true
+    local excl = { pathFolder, playFolder }
+    if char() then table.insert(excl, char()) end
+    -- exclude vehicles/characters so parked cars don't poison road cells
+    pcall(function()
+        for _, m in ipairs(workspace:GetChildren()) do
+            if m:IsA('Model') and (m:FindFirstChildWhichIsA('VehicleSeat', true)
+               or m:FindFirstChildOfClass('Humanoid')) then
+                table.insert(excl, m)
+            end
+        end
+    end)
+    rp.FilterDescendantsInstances = excl
+    Scan.rp = rp
+
+    local hit = workspace:Raycast(r.Position + Vector3.new(0, 10, 0), Vector3.new(0, -60, 0), rp)
+    if not hit then toast('no ground under you — park on a road first', C.RED) return end
+    if hit.Normal.Y < 0.9 then toast('surface too steep to seed from', C.RED) return end
+
+    Scan.mats[hit.Material.Name] = true
+    Scan.frontier, Scan.fHead, Scan.fTail = {}, 1, 0
+    Scan.visited = {}
+    Scan.checked = 0
+    Scan.startedAt = os.clock()
+    scanPush(math.floor(hit.Position.X / Scan.CELL + 0.5),
+             math.floor(hit.Position.Z / Scan.CELL + 0.5), hit.Position.Y)
+    Scan.running = true
+    toast('scanning from here — surface: ' .. hit.Material.Name, C.GREEN)
+    Scan.conn = bind(RunService.Heartbeat:Connect(Scan.step))
+end
+
+function Scan.clear()
+    Scan.stop(false)
+    Scan.grid, Scan.count, Scan.mats = nil, 0, {}
+    pcall(function() delfile(gameFolder .. '/scan.json') end)
+    toast('scan wiped', C.MUT)
+end
+
+-- binary min-heap for grid a*
+local function heapNew() return { n = 0 } end
+local function heapPush(h, item)
+    h.n = h.n + 1
+    h[h.n] = item
+    local i = h.n
+    while i > 1 do
+        local p = math.floor(i / 2)
+        if h[p][1] <= h[i][1] then break end
+        h[p], h[i] = h[i], h[p]
+        i = p
+    end
+end
+local function heapPop(h)
+    if h.n == 0 then return nil end
+    local top = h[1]
+    h[1] = h[h.n]
+    h[h.n] = nil
+    h.n = h.n - 1
+    local i = 1
+    while true do
+        local l, r2, m = i * 2, i * 2 + 1, i
+        if l <= h.n and h[l][1] < h[m][1] then m = l end
+        if r2 <= h.n and h[r2][1] < h[m][1] then m = r2 end
+        if m == i then break end
+        h[i], h[m] = h[m], h[i]
+        i = m
+    end
+    return top
+end
+
+-- nearest scanned cell to a world position (spiral search)
+function Scan.findCell(pos)
+    local cx0 = math.floor(pos.X / Scan.CELL + 0.5)
+    local cz0 = math.floor(pos.Z / Scan.CELL + 0.5)
+    for ring = 0, 14 do
+        local best
+        for dx = -ring, ring do
+            for dz = -ring, ring do
+                if math.max(math.abs(dx), math.abs(dz)) == ring then
+                    local y = Scan.grid[scanKey(cx0 + dx, cz0 + dz)]
+                    if y and (not best or math.abs(y - pos.Y) < math.abs(best.y - pos.Y)) then
+                        best = { cx = cx0 + dx, cz = cz0 + dz, y = y }
+                    end
+                end
+            end
+        end
+        if best then return best end
+    end
+    return nil
+end
+
+-- grid a* + line-of-sight smoothing -> drivable polyline
+function Scan.route(fromPos, toPos)
+    if not Scan.available() then return nil, 'no scan for this game' end
+    local grid, CELL = Scan.grid, Scan.CELL
+    local sc = Scan.findCell(fromPos)
+    if not sc then return nil, 'you are not near any scanned surface' end
+    local gc = Scan.findCell(toPos)
+    if not gc then return nil, 'destination not near any scanned surface' end
+
+    local sKey, gKey = scanKey(sc.cx, sc.cz), scanKey(gc.cx, gc.cz)
+    if sKey == gKey then return nil, 'already there' end
+
+    local open = heapNew()
+    local g, from = { [sKey] = 0 }, {}
+    heapPush(open, { 0, sc.cx, sc.cz })
+    local dirs = {
+        { 1, 0, 1 }, { -1, 0, 1 }, { 0, 1, 1 }, { 0, -1, 1 },
+        { 1, 1, 1.414 }, { 1, -1, 1.414 }, { -1, 1, 1.414 }, { -1, -1, 1.414 },
+    }
+    local expanded, found = 0, false
+    while true do
+        local cur = heapPop(open)
+        if not cur then break end
+        local cx, cz = cur[2], cur[3]
+        local ck = scanKey(cx, cz)
+        if ck == gKey then found = true break end
+        expanded = expanded + 1
+        if expanded > 400000 then break end
+        local cy = grid[ck]
+        for _, d in ipairs(dirs) do
+            local nx, nz = cx + d[1], cz + d[2]
+            local nk = scanKey(nx, nz)
+            local ny = grid[nk]
+            if ny and math.abs(ny - cy) <= 4 then
+                -- no corner cutting on diagonals
+                if d[3] > 1 and not (grid[scanKey(cx + d[1], cz)] and grid[scanKey(cx, cz + d[2])]) then
+                    ny = nil
+                end
+                if ny then
+                    local ng = g[ck] + d[3]
+                    if not g[nk] or ng < g[nk] then
+                        g[nk] = ng
+                        from[nk] = ck
+                        heapPush(open, { ng + math.sqrt((gc.cx - nx) ^ 2 + (gc.cz - nz) ^ 2), nx, nz })
+                    end
+                end
+            end
+        end
+    end
+    if not found then return nil, 'no drivable route on the scan (disconnected area?)' end
+
+    -- reconstruct cell chain
+    local cells = {}
+    local ck = gKey
+    while ck do
+        local cxs, czs = ck:match('(-?%d+),(-?%d+)')
+        table.insert(cells, 1, { tonumber(cxs), tonumber(czs) })
+        ck = from[ck]
+    end
+
+    -- line-of-sight smoothing so the route doesn't zigzag cell to cell
+    local function los(a, b)
+        local steps = math.max(math.abs(b[1] - a[1]), math.abs(b[2] - a[2]))
+        if steps == 0 then return true end
+        local prevY = grid[scanKey(a[1], a[2])]
+        for s = 1, steps do
+            local t = s / steps
+            local x = math.floor(a[1] + (b[1] - a[1]) * t + 0.5)
+            local z = math.floor(a[2] + (b[2] - a[2]) * t + 0.5)
+            local y = grid[scanKey(x, z)]
+            if not y or math.abs(y - prevY) > 4 then return false end
+            prevY = y
+        end
+        return true
+    end
+    local way = { cells[1] }
+    local i = 1
+    while i < #cells do
+        local j = math.min(i + 40, #cells)
+        while j > i + 1 and not los(cells[i], cells[j]) do j = j - 1 end
+        table.insert(way, cells[j])
+        i = j
+    end
+
+    -- emit drivable points every ~3 studs, default cruise 30 studs/s --
+    -- the driver's corner anticipation shapes real speeds from geometry
+    local pts = {}
+    for wi = 1, #way - 1 do
+        local a, b = way[wi], way[wi + 1]
+        local ax, az = a[1] * CELL, a[2] * CELL
+        local bx, bz = b[1] * CELL, b[2] * CELL
+        local ay = grid[scanKey(a[1], a[2])]
+        local by = grid[scanKey(b[1], b[2])]
+        local segLen = math.sqrt((bx - ax) ^ 2 + (bz - az) ^ 2)
+        local steps = math.max(math.floor(segLen / 3), 1)
+        for s = (wi == 1 and 0 or 1), steps do
+            local t = s / steps
+            table.insert(pts, { ax + (bx - ax) * t, ay + (by - ay) * t + 1, az + (bz - az) * t, 30 })
+        end
+    end
+    return pts
+end
+
 -- a* over the road graph. from/to are world positions; virtual start and
 -- goal nodes attach to the nearest point of their containing edge
 function Net.route(fromPos, toPos)
@@ -1396,7 +1745,7 @@ local tabRow = new('Frame', {
     Size = UDim2.new(1, -36, 0, 26), Parent = panel,
 }, { new('UIListLayout', { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }) })
 
-local tabs, tabBtns, tabFrames = { 'record', 'load' }, {}, {}
+local tabs, tabBtns, tabFrames = { 'record', 'load', 'scan' }, {}, {}
 local activeTab = 'record'
 
 local content = new('Frame', {
@@ -1627,27 +1976,38 @@ netGoBtn.MouseButton1Click:Connect(function()
     local destV = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
     local r = hrp()
     if not r then toast('no character', C.RED) return end
-    local nSegs = Net.load()
-    if nSegs == 0 then
-        toast('no road segments — record roads and "save as road segment"', C.RED)
-        netStatus.Text = 'network: 0 segments'
-        return
-    end
-    toast('building network + routing...', C.WHITE)
+    toast('routing...', C.WHITE)
     task.spawn(function()
-        local ok, route, rerr = pcall(Net.route, r.Position, destV)
-        if not ok then
-            toast('routing error: ' .. tostring(route):sub(1, 60), C.RED)
-            netStatus.Text = string.format('network: %d segs — internal error', nSegs)
-            return
+        local route, rerr, mode
+        -- scan grid first: any scanned coordinate is reachable
+        if Scan.available() then
+            local ok, rt, er = pcall(Scan.route, r.Position, destV)
+            if ok and rt then
+                route, mode = rt, 'scan'
+            else
+                rerr = ok and er or ('scan error: ' .. tostring(rt):sub(1, 50))
+            end
+        end
+        -- recorded road network as fallback
+        if not route then
+            local nSegs = Net.load()
+            if nSegs > 0 then
+                local ok, rt, er = pcall(Net.route, r.Position, destV)
+                if ok and rt then
+                    route, mode = rt, 'network'
+                elseif not rerr then
+                    rerr = ok and er or ('network error: ' .. tostring(rt):sub(1, 50))
+                end
+            elseif not rerr then
+                rerr = 'no scan and no road segments — scan tab or record roads'
+            end
         end
         if not route then
             toast(rerr or 'routing failed', C.RED)
-            netStatus.Text = string.format('network: %d segs — routing failed', nSegs)
+            netStatus.Text = 'routing failed'
             return
         end
-        netStatus.Text = string.format('network: %d segs, %d nodes, %d edges',
-            nSegs, Net.nodes and #Net.nodes or 0, Net.edges and #Net.edges or 0)
+        netStatus.Text = string.format('routed via %s — %d points', mode, #route)
         -- final approach: short straight taper from the road exit to the
         -- exact destination (parking lots etc), slow speeds
         local lastP = route[#route]
@@ -1675,6 +2035,70 @@ netGoBtn.MouseButton1Click:Connect(function()
         })
     end)
 end)
+
+-- ============================================================
+-- // scan tab
+-- ============================================================
+local scanTab = tabFrames['scan']
+local scanLeft = tile(scanTab, UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -5, 1, 0), '~/scanner')
+local scanRight = tile(scanTab, UDim2.new(0.5, 5, 0, 0), UDim2.new(0.5, -5, 1, 0), '~/how it works')
+
+local scanStartBtn = new('TextButton', {
+    Position = UDim2.new(0, 12, 0, 32), Size = UDim2.new(1, -24, 0, 40),
+    BackgroundColor3 = C.BG3, Font = FONTB, TextSize = 13, TextColor3 = C.TEXT,
+    Text = '>  scan from here', AutoButtonColor = false, Parent = scanLeft,
+}, { corner(5), stroke(C.BORDER2) })
+hoverable(scanStartBtn, C.BG3, Color3.fromRGB(45, 45, 45))
+local scanStopBtn = new('TextButton', {
+    Position = UDim2.new(0, 12, 0, 80), Size = UDim2.new(0.5, -16, 0, 26),
+    BackgroundColor3 = C.BG2, Font = FONT, TextSize = 11, TextColor3 = C.TEXT,
+    Text = 'stop + save', AutoButtonColor = false, Parent = scanLeft,
+}, { corner(4), stroke(C.BORDER) })
+local scanClearBtn = new('TextButton', {
+    Position = UDim2.new(0.5, 4, 0, 80), Size = UDim2.new(0.5, -16, 0, 26),
+    BackgroundColor3 = C.BG1, Font = FONT, TextSize = 11, TextColor3 = C.DIM,
+    Text = 'wipe scan', AutoButtonColor = false, Parent = scanLeft,
+}, { corner(4), stroke(C.BORDER) })
+hoverable(scanStopBtn, C.BG2, Color3.fromRGB(45, 45, 45))
+hoverable(scanClearBtn, C.BG1, Color3.fromRGB(55, 22, 22))
+local scanStatus = new('TextLabel', {
+    BackgroundTransparency = 1, Font = FONT, TextSize = 12, TextColor3 = C.MUT,
+    TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+    Position = UDim2.new(0, 12, 0, 120), Size = UDim2.new(1, -24, 1, -132),
+    Text = 'state    idle\ncells    0\nchecked  0', Parent = scanLeft,
+})
+new('TextLabel', {
+    BackgroundTransparency = 1, Font = FONT, TextSize = 11.5, TextColor3 = C.MUT,
+    TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
+    TextWrapped = true, LineHeight = 1.35,
+    Position = UDim2.new(0, 12, 0, 32), Size = UDim2.new(1, -24, 1, -44),
+    Text = 'park on a road, hit scan. it learns the\n'
+        .. 'surface under you and flood-fills every\n'
+        .. 'connected drivable cell -- streets, lots,\n'
+        .. 'everything touching the road system.\n\n'
+        .. 'saves to scan.json. rejoin-proof. scan\n'
+        .. 'again anywhere to extend (it merges).\n\n'
+        .. 'auto-drive uses the scan first, recorded\n'
+        .. 'road segments as fallback. any scanned\n'
+        .. 'coordinate becomes reachable.',
+    Parent = scanRight,
+})
+
+scanStartBtn.MouseButton1Click:Connect(function() Scan.start() end)
+scanStopBtn.MouseButton1Click:Connect(function() Scan.stop(true) end)
+scanClearBtn.MouseButton1Click:Connect(function() Scan.clear() end)
+
+bind(RunService.Heartbeat:Connect(function()
+    if not scanStatus.Parent then return end
+    if Scan.running or Scan.count > 0 then
+        scanStatus.Text = string.format(
+            'state    %s\ncells    %d drivable\nchecked  %d\nfrontier %d\ntime     %s',
+            Scan.running and 'scanning...' or 'idle (saved)',
+            Scan.count, Scan.checked,
+            Scan.running and (Scan.fTail - Scan.fHead + 1) or 0,
+            Scan.running and fmtTime(os.clock() - Scan.startedAt) or '--:--')
+    end
+end))
 
 -- ============================================================
 -- // save dialog (modal over panel)
