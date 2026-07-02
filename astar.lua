@@ -1,8 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.4 -- distance-proportional steering: stud-fine on the line,
-           progressively harder the farther off, up to full lock
+    v1.5 -- dead-center following: humanoid sits literally above the line,
+           hot low-end cross-track gain + stronger yaw damping
 ]]
 
 -- ============================================================
@@ -809,12 +809,12 @@ function startPlayback(entry)
         -- restores mid-range authority (pure squaring choked real turns)
         local x = math.clamp(angle / steerDiv, -1, 1)
         local p = x * (0.4 + 0.6 * math.abs(x))
-        local yawDamp = math.clamp(sp2.AssemblyAngularVelocity.Y * 0.35, -0.6, 0.6)
+        local yawDamp = math.clamp(sp2.AssemblyAngularVelocity.Y * 0.42, -0.7, 0.7)
 
-        -- cross-track steering: proportional to distance off the line --
-        -- sub-stud offsets get fine trim, the farther off it is the harder
-        -- it turns back, up to near-full lock
-        --   0.5 studs -> ~0.05   2 studs -> ~0.25   5 studs -> ~0.80
+        -- cross-track steering: the humanoid must sit literally above the
+        -- line. hot low-end gain pulls sub-stud offsets dead center,
+        -- distance still scales it up to near-full lock
+        --   0.25 studs -> ~0.06   1 stud -> ~0.26   2 -> ~0.62   3+ -> 0.90
         local ct = 0
         do
             local a = pts[idx]
@@ -824,7 +824,7 @@ function startPlayback(entry)
                 d = d.Unit
                 local rightOf = Vector3.new(-d.Z, 0, d.X)
                 local lat = Vector3.new(pos.X - a[1], 0, pos.Z - a[3]):Dot(rightOf)
-                ct = -math.clamp(lat * 0.10 * (1 + math.abs(lat) / 8), -0.85, 0.85)
+                ct = -math.clamp(lat * 0.22 * (1 + math.abs(lat) / 5), -0.9, 0.9)
             end
         end
         local steer = math.clamp(p + yawDamp + ct, -1, 1)
