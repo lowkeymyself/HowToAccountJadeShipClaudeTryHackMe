@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.9.1 -- scan shrink fixed (monotonic short runs: lerp can't corrupt
-           heights anymore), findCell radius 3x, road-only fallback is
-           announced, fence memory 2min. WIPE + RESCAN ONCE after this.
+    v4.9.2 -- scan overlay: paint the grid on the ground (white = road,
+           grey = drivable) to SEE coverage and road tags; richer scan
+           stats (road / tested / rejected)
 ]]
 
 -- ============================================================
@@ -2485,12 +2485,66 @@ local scanClearBtn = new('TextButton', {
 }, { corner(4), stroke(C.BORDER) })
 hoverable(scanStopBtn, C.BG2, Color3.fromRGB(45, 45, 45))
 hoverable(scanClearBtn, C.BG1, Color3.fromRGB(55, 22, 22))
+-- ground overlay: paints the grid around you (white = road tag,
+-- grey = drivable) so scan coverage is visible instead of guessed
+local scanPrevBtn = new('TextButton', {
+    Position = UDim2.new(0, 12, 0, 112), Size = UDim2.new(1, -24, 0, 24),
+    BackgroundColor3 = C.BG2, Font = FONT, TextSize = 11, TextColor3 = C.DIM,
+    Text = 'scan overlay: off', AutoButtonColor = false, Parent = scanLeft,
+}, { corner(4), stroke(C.BORDER) })
 local scanStatus = new('TextLabel', {
     BackgroundTransparency = 1, Font = FONT, TextSize = 12, TextColor3 = C.MUT,
     TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
-    Position = UDim2.new(0, 12, 0, 120), Size = UDim2.new(1, -24, 1, -132),
+    Position = UDim2.new(0, 12, 0, 146), Size = UDim2.new(1, -24, 1, -158),
     Text = 'state    idle\ncells    0\nchecked  0', Parent = scanLeft,
 })
+
+local prevFolder = Instance.new('Folder')
+prevFolder.Name = 'KAStarScanPreview'
+prevFolder.Parent = workspace
+local scanPrevOn, prevAcc = false, 0
+scanPrevBtn.MouseButton1Click:Connect(function()
+    scanPrevOn = not scanPrevOn
+    scanPrevBtn.Text = 'scan overlay: ' .. (scanPrevOn and 'on' or 'off')
+    scanPrevBtn.TextColor3 = scanPrevOn and C.TEXT or C.DIM
+    if not scanPrevOn then prevFolder:ClearAllChildren() end
+    if scanPrevOn and not Scan.available() then
+        toast('no scan to preview', C.RED)
+    end
+end)
+bind(RunService.Heartbeat:Connect(function(dt)
+    if not scanPrevOn then return end
+    prevAcc = prevAcc + dt
+    if prevAcc < 2 then return end
+    prevAcc = 0
+    prevFolder:ClearAllChildren()
+    local r = hrp()
+    if not r or not Scan.grid then return end
+    local cx0 = math.floor(r.Position.X / Scan.CELL + 0.5)
+    local cz0 = math.floor(r.Position.Z / Scan.CELL + 0.5)
+    local made = 0
+    for dx = -20, 20 do
+        for dz = -20, 20 do
+            local k = (cx0 + dx) .. ',' .. (cz0 + dz)
+            local y = Scan.grid[k]
+            if y and made < 1700 then
+                made = made + 1
+                local p = Instance.new('Part')
+                p.Anchored = true
+                p.CanCollide = false
+                p.CanQuery = false
+                p.CanTouch = false
+                p.CastShadow = false
+                p.Material = Enum.Material.Neon
+                p.Transparency = 0.68
+                p.Color = Scan.roads[k] and C.WHITE or Color3.fromRGB(85, 85, 85)
+                p.Size = Vector3.new(Scan.CELL - 0.8, 0.12, Scan.CELL - 0.8)
+                p.CFrame = CFrame.new((cx0 + dx) * Scan.CELL, y + 0.15, (cz0 + dz) * Scan.CELL)
+                p.Parent = prevFolder
+            end
+        end
+    end
+end))
 new('TextLabel', {
     BackgroundTransparency = 1, Font = FONT, TextSize = 11.5, TextColor3 = C.MUT,
     TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top,
@@ -2516,9 +2570,10 @@ bind(RunService.Heartbeat:Connect(function()
     if not scanStatus.Parent then return end
     if Scan.running or Scan.count > 0 then
         scanStatus.Text = string.format(
-            'state    %s\ncells    %d drivable\nchecked  %d\nfrontier %d\ntime     %s',
+            'state    %s\ncells    %d drivable\nroad     %d tagged\ntested   %d (rejected %d)\nfrontier %d\ntime     %s',
             Scan.running and 'scanning...' or 'idle (saved)',
-            Scan.count, Scan.checked,
+            Scan.count, Scan.roadCount, Scan.checked,
+            math.max(Scan.checked - Scan.count, 0),
             Scan.running and (Scan.fTail - Scan.fHead + 1) or 0,
             Scan.running and fmtTime(os.clock() - Scan.startedAt) or '--:--')
     end
@@ -2823,6 +2878,10 @@ _G.KAStarCleanup = function()
     pcall(clearPlayPath)
     pcall(function() pathFolder:Destroy() end)
     pcall(function() playFolder:Destroy() end)
+    pcall(function()
+        local pf = workspace:FindFirstChild('KAStarScanPreview')
+        if pf then pf:Destroy() end
+    end)
     pcall(function() gui:Destroy() end)
 end
 
