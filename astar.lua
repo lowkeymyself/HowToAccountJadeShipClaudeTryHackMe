@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v2.0 -- high-speed competence: scanner sees true braking distance
-           (650 studs), road turns punch through the steer cap, line
-           acquisition merges with speed when aligned, 0.4-stud deadzone
+    v2.1 -- rebalance: medium turns slow down again, slower-turn steering
+           restored, predictive counter-steer no longer muted by the
+           acquisition rule during fast lateral convergence
 ]]
 
 -- ============================================================
@@ -877,6 +877,7 @@ function startPlayback(entry)
         -- before crossing the line. like a human.
         local ct = 0
         local align = 1
+        local latVelAbs = 0
         local acquiring = err > 6
         do
             local a = pts[idx]
@@ -888,14 +889,15 @@ function startPlayback(entry)
                 local lat = Vector3.new(pos.X - a[1], 0, pos.Z - a[3]):Dot(rightOf)
                 local vel = sp2.AssemblyLinearVelocity
                 local latVel = Vector3.new(vel.X, 0, vel.Z):Dot(rightOf)
+                latVelAbs = math.abs(latVel)
                 -- longer horizon while acquiring the line: counter-steer
                 -- BEFORE crossing it, not after sailing past
                 local predLat = lat + latVel * (acquiring and 0.6 or 0.35)
                 -- soft deadzone: "somewhat below" the line, not surgically
-                -- glued -- sub-0.4-stud offsets are left alone
-                local mag = math.max(math.abs(predLat) - 0.4, 0)
+                -- glued -- sub-quarter-stud offsets are left alone
+                local mag = math.max(math.abs(predLat) - 0.25, 0)
                 local effLat = (predLat >= 0 and 1 or -1) * mag
-                ct = -math.clamp(effLat * 0.16 * (1 + math.abs(effLat) / 5), -0.8, 0.8)
+                ct = -math.clamp(effLat * 0.20 * (1 + math.abs(effLat) / 5), -0.8, 0.8)
                 -- offset-aware speed softening: near the line, high-speed
                 -- authority is cut (stability, no weave). genuinely off the
                 -- line the softening fades out -- accuracy demands pull
@@ -919,15 +921,17 @@ function startPlayback(entry)
         local steerCap = math.max(baseCap, math.min(0.75, math.abs(p)))
         local steer = math.clamp(p + yawDamp + ct, -steerCap, steerCap)
         -- acquiring the line while already pointing at it: stop sawing
-        -- the wheel -- speed closes the gap, not steering
-        if acquiring and align > 0.75 then
+        -- the wheel -- speed closes the gap, not steering. ONLY when not
+        -- flying sideways: fast lateral convergence needs the prediction's
+        -- full counter-steer authority to unwind before crossing
+        if acquiring and align > 0.75 and latVelAbs < 8 then
             steer = steer * 0.5
         end
 
         -- target speed: recorded profile x multiplier x learned factor, curve slowdown
         local recSpd = pts[math.min(idx + 4, #pts)][4] or 16
         local learned = (S.playData.learned and S.playData.learned[bucket]) or 1
-        local curveCut = 1 - math.min(math.abs(angle) / math.rad(60), 1) * 0.35
+        local curveCut = 1 - math.min(math.abs(angle) / math.rad(60), 1) * 0.45
         local targetSpd = math.max(6, recSpd * S.speedMult * learned * curveCut)
 
         -- corner anticipation: natural braking envelope, like a driver who
@@ -936,10 +940,10 @@ function startPlayback(entry)
         -- when fast, tapering off, corner speed reached ~12 studs early.
         -- k threshold ignores dull bends entirely (no fake slowdowns)
         local k, dCorner = maxCurvatureAhead(pts, idx, spd)
-        if k > 0.004 then
+        if k > 0.0025 then
             -- 8% safety trim on corner speed: margin for obstacles instead
             -- of exiting every tight turn at the edge of control
-            local vCorner = math.max(math.sqrt(30 / k) * 0.92, 11)
+            local vCorner = math.max(math.sqrt(26 / k) * 0.92, 11)
             local dBrake = math.max(dCorner - 12, 0)
             local vAllowed = math.sqrt(vCorner * vCorner + 2 * 22 * dBrake)
             targetSpd = math.min(targetSpd, vAllowed)
