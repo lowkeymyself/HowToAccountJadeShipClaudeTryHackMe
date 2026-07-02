@@ -1,8 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.2 -- pd steering (squared response + yaw damping, no more spirals),
-           additive velocity assist so it always moves and always brakes
+    v1.3 -- cross-track trim: fine lateral steering glues the vehicle's
+           middle onto the recorded line (big-hitbox accuracy)
 ]]
 
 -- ============================================================
@@ -721,7 +721,10 @@ function startPlayback(entry)
             return
         end
 
-        local pos = sp2.Position
+        -- track the character root -- same reference point the recorder
+        -- sampled, so playback measures against the exact recorded line
+        local ref = hrp()
+        local pos = (ref and ref.Position) or sp2.Position
         local spd = sp2.AssemblyLinearVelocity.Magnitude
         local idx, err = closestIdx(pts, S.playIdx, pos)
         S.playIdx = idx
@@ -805,7 +808,23 @@ function startPlayback(entry)
         local x = math.clamp(angle / steerDiv, -1, 1)
         local p = x * math.abs(x)
         local yawDamp = math.clamp(sp2.AssemblyAngularVelocity.Y * 0.35, -0.6, 0.6)
-        local steer = math.clamp(p + yawDamp, -1, 1)
+
+        -- cross-track trim: fine lateral correction that glues the
+        -- vehicle's middle onto the line. signed distance to the path,
+        -- tiny counter-steer, hard-capped so it can only ever nudge
+        local ct = 0
+        do
+            local a = pts[idx]
+            local b = pts[math.min(idx + 1, #pts)]
+            local d = Vector3.new(b[1] - a[1], 0, b[3] - a[3])
+            if d.Magnitude > 0.01 then
+                d = d.Unit
+                local rightOf = Vector3.new(-d.Z, 0, d.X)
+                local lat = Vector3.new(pos.X - a[1], 0, pos.Z - a[3]):Dot(rightOf)
+                ct = -math.clamp(lat * 0.06, -0.22, 0.22)
+            end
+        end
+        local steer = math.clamp(p + yawDamp + ct, -1, 1)
 
         -- target speed: recorded profile x multiplier x learned factor, curve slowdown
         local recSpd = pts[math.min(idx + 4, #pts)][4] or 16
