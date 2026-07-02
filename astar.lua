@@ -842,10 +842,19 @@ function Net.nearest(pos)
     return best
 end
 
+-- find the edge containing sample i of segment si. junction areas can
+-- leave small index gaps owned by no edge (merged nodes) -- fall back
+-- to the nearest edge on the same segment so routing never dead-ends
 local function edgeContaining(si, i)
+    local best, bestD
     for ei, e in ipairs(Net.edges) do
-        if e.si == si and i >= e.i1 and i <= e.i2 then return ei end
+        if e.si == si then
+            if i >= e.i1 and i <= e.i2 then return ei end
+            local d = (i < e.i1) and (e.i1 - i) or (i - e.i2)
+            if not bestD or d < bestD then bestD = d; best = ei end
+        end
     end
+    return best
 end
 
 local function subPts(si, iFrom, iTo)
@@ -876,8 +885,20 @@ function Net.route(fromPos, toPos)
     if not Net.build() then return nil, 'no road segments recorded yet' end
     local sN, gN = Net.nearest(fromPos), Net.nearest(toPos)
     if not sN or not gN then return nil, 'network empty' end
+
+    -- same-segment direct route: always valid, used as shortcut when on
+    -- the same edge and as fallback whenever the graph can't help
+    local function direct()
+        if sN.si == gN.si then return subPts(sN.si, sN.i, gN.i) end
+        return nil
+    end
+
     local sE, gE = edgeContaining(sN.si, sN.i), edgeContaining(gN.si, gN.i)
-    if not sE or not gE then return nil, 'network graph error' end
+    if not sE or not gE then
+        local d = direct()
+        if d then return d end
+        return nil, 'network graph error'
+    end
 
     if sE == gE then
         return subPts(sN.si, sN.i, gN.i)
@@ -917,7 +938,11 @@ function Net.route(fromPos, toPos)
             end
         end
     end
-    if not found then return nil, 'no route found -- network disconnected?' end
+    if not found then
+        local d = direct()
+        if d then return d end
+        return nil, 'no route found -- network disconnected?'
+    end
 
     -- reconstruct node chain, then stitch polylines
     local chain = {}
@@ -1610,7 +1635,12 @@ netGoBtn.MouseButton1Click:Connect(function()
     end
     toast('building network + routing...', C.WHITE)
     task.spawn(function()
-        local route, rerr = Net.route(r.Position, destV)
+        local ok, route, rerr = pcall(Net.route, r.Position, destV)
+        if not ok then
+            toast('routing error: ' .. tostring(route):sub(1, 60), C.RED)
+            netStatus.Text = string.format('network: %d segs — internal error', nSegs)
+            return
+        end
         if not route then
             toast(rerr or 'routing failed', C.RED)
             netStatus.Text = string.format('network: %d segs — routing failed', nSegs)
