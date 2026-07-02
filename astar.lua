@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.6 -- normal-driver routing: roads-only when tags exist (off-road
-           allowed only in start/goal stubs), unrestricted search kept
-           strictly as a can't-connect fallback
+    v4.7 -- licensed driver toggle, dynamic reroute around 12s+ static
+           blockers (fenced cells), smarter stuck reverse, arrival
+           braking, throttle floor (no more crawling)
 ]]
 
 -- ============================================================
@@ -94,6 +94,9 @@ local S = {
     lastS       = 0,        -- last commanded steer (hud display)
     acquired    = true,     -- reached the line at least once this drive
     invertSteer = false,
+    licensed    = true,     -- roads-only routing (off = lawn shortcuts ok)
+    routeDest   = nil,      -- destination Vector3 of the active route
+    blockCells  = {},       -- "cx,cz" -> expiry: cells fenced off by reroutes
     speedMult   = 1.0,
     blocked     = nil,      -- {name=, class=, since=}
     clearSince  = nil,
@@ -396,7 +399,7 @@ end
 local openOverlay, closeOverlay, showSaveDialog, refreshLoadList
 local showRecordHUD, hideRecordHUD, showPlayHUD, hidePlayHUD
 local setRecStatus, setPlayStatus
-local startRecording, endRecording, startPlayback, stopPlayback
+local startRecording, endRecording, startPlayback, stopPlayback, routeAndDrive
 
 -- ============================================================
 -- // recorder
@@ -1322,6 +1325,11 @@ function Scan.route(fromPos, toPos)
                     if roadsOnly and ny and not Scan.roads[nk] and not nearStub(nx, nz) then
                         ny = nil
                     end
+                    -- cells fenced off by dynamic reroutes (blocked obstacles)
+                    if ny then
+                        local bc = S.blockCells[nk]
+                        if bc and bc > os.clock() then ny = nil end
+                    end
                     if ny then
                         local mult = (roadsOnly or Scan.roads[nk]) and 1 or 1.9
                         local ng = g[ck] + d[3] * mult + hugPenalty(nx, nz, nk)
@@ -1335,9 +1343,11 @@ function Scan.route(fromPos, toPos)
             end
         end
     end
-    -- roads-only first when tags exist; unrestricted only as a last resort
+    -- licensed driver: roads-only when tags exist. unlicensed: free
+    -- routing from the start. unrestricted always remains the last-resort
+    -- fallback so a route is found whenever one physically exists
     local from
-    if Scan.roadCount > 0 then from = search(true) end
+    if S.licensed and Scan.roadCount > 0 then from = search(true) end
     if not from then from = search(false) end
     if not from then return nil, 'no drivable route on the scan (disconnected area?)' end
 
@@ -1658,9 +1668,29 @@ function startPlayback(entry)
             end
             setPlayStatus('waiting — ' .. string.lower(S.blocked.name)
                 .. (S.blocked.class == 'traffic' and ' [traffic]' or ' [static]'), idx, #pts, spd, pts)
-            if S.blocked.class == 'static' and os.clock() - S.blocked.since > 15 then
-                toast('blocked 15s+ by static geometry — path may be stale', C.YELLOW)
-                S.blocked.since = os.clock() -- don't spam
+            -- dynamic fix: static blocker (not traffic) for 12s -> fence
+            -- off its cells in the grid and recompute the route around it
+            if S.blocked.class == 'static' and os.clock() - S.blocked.since > 12 then
+                if S.routeDest and routeAndDrive then
+                    local bp
+                    pcall(function() bp = S.blocked.inst.Position end)
+                    if bp then
+                        local bx = math.floor(bp.X / Scan.CELL + 0.5)
+                        local bz = math.floor(bp.Z / Scan.CELL + 0.5)
+                        for dx = -2, 2 do
+                            for dz = -2, 2 do
+                                S.blockCells[(bx + dx) .. ',' .. (bz + dz)] = os.clock() + 300
+                            end
+                        end
+                    end
+                    local dest = S.routeDest
+                    toast('blocked 12s — rerouting around the obstacle', C.YELLOW)
+                    stopPlayback(nil, false, true)
+                    task.defer(routeAndDrive, dest)
+                else
+                    toast('blocked 15s+ by static geometry — path may be stale', C.YELLOW)
+                    S.blocked.since = os.clock() -- don't spam
+                end
             end
             return
         end
@@ -1786,9 +1816,20 @@ function startPlayback(entry)
             end
         end
 
-        -- throttle: proportional band, full send when well under target
+        -- ease into the destination like a driver, not a dart
+        if dEnd < 60 then
+            targetSpd = math.min(targetSpd, math.max(dEnd * 0.35, 6))
+        end
+
+        -- throttle: proportional band with a firm floor -- tiny pwm duties
+        -- from small proportional values are why it sometimes crawled at
+        -- 80% of target forever
         local throttle = math.clamp((targetSpd - spd) / 5, -1, 1)
-        if spd < targetSpd * 0.5 then throttle = 1 end
+        if spd < targetSpd * 0.5 then
+            throttle = 1
+        elseif spd < targetSpd - 1 and throttle < 0.45 then
+            throttle = 0.45
+        end
         applyDrive(throttle, steer)
 
         -- velocity assist: physics-level, additive (never a multiplier --
@@ -1810,12 +1851,13 @@ function startPlayback(entry)
             end
         end
 
-        -- stuck detection -> hardcoded reverse burst
-        if throttle > 0.7 and spd < 1.5 then
+        -- stuck detection -> reverse burst. ANY commanded-forward-but-not-
+        -- moving counts, not just full throttle
+        if throttle > 0.15 and spd < 2 then
             stuckT = stuckT + dt
             if stuckT > 3 then
                 stuckT = 0
-                reversingUntil = os.clock() + 1.2
+                reversingUntil = os.clock() + 1.4
                 toast('vehicle appears stuck — reversing', C.YELLOW)
             end
         else
@@ -1826,13 +1868,14 @@ function startPlayback(entry)
     end))
 end
 
-function stopPlayback(reason, arrived)
+function stopPlayback(reason, arrived, quiet)
     if S.mode ~= 'playing' then return end
     S.mode = 'idle'
     if playConn then playConn:Disconnect() playConn = nil end
     releaseDrive()
     clearPlayPath()
     hidePlayHUD()
+    if not quiet then S.routeDest = nil end
 
     if arrived then
         local t = os.clock() - S.playStart
@@ -1858,7 +1901,7 @@ function stopPlayback(reason, arrived)
         end
     elseif reason then
         toast(reason, C.RED)
-    else
+    elseif not quiet then
         toast('playback ended', C.MUT)
     end
     S.playData = nil
@@ -2128,7 +2171,7 @@ new('TextLabel', {
 })
 
 local invBtn = new('TextButton', {
-    Position = UDim2.new(0, 12, 0, 168), Size = UDim2.new(1, -24, 0, 24),
+    Position = UDim2.new(0, 12, 0, 168), Size = UDim2.new(0.5, -16, 0, 24),
     BackgroundColor3 = C.BG2, Font = FONT, TextSize = 11, TextColor3 = C.DIM,
     Text = 'invert steer: off', AutoButtonColor = false, Parent = loadRight,
 }, { corner(4), stroke(C.BORDER) })
@@ -2136,6 +2179,18 @@ invBtn.MouseButton1Click:Connect(function()
     S.invertSteer = not S.invertSteer
     invBtn.Text = 'invert steer: ' .. (S.invertSteer and 'on' or 'off')
     invBtn.TextColor3 = S.invertSteer and C.TEXT or C.DIM
+end)
+-- licensed driver: on = roads only, off = lawn shortcuts allowed
+local licBtn = new('TextButton', {
+    Position = UDim2.new(0.5, 4, 0, 168), Size = UDim2.new(0.5, -16, 0, 24),
+    BackgroundColor3 = C.BG2, Font = FONT, TextSize = 11, TextColor3 = C.TEXT,
+    Text = 'licensed: on', AutoButtonColor = false, Parent = loadRight,
+}, { corner(4), stroke(C.BORDER) })
+licBtn.MouseButton1Click:Connect(function()
+    S.licensed = not S.licensed
+    licBtn.Text = 'licensed: ' .. (S.licensed and 'on' or 'off')
+    licBtn.TextColor3 = S.licensed and C.TEXT or C.DIM
+    toast(S.licensed and 'licensed driver — roads only' or 'unlicensed — shortcuts allowed', C.WHITE)
 end)
 
 -- network auto-drive section
@@ -2230,11 +2285,9 @@ delBtn.MouseButton1Click:Connect(function()
     refreshLoadList()
 end)
 
--- network auto-drive: a* over recorded road segments to a coordinate
-netGoBtn.MouseButton1Click:Connect(function()
-    local x, y, z = coordsBox.Text:match('(-?%d+%.?%d*)%s*,%s*(-?%d+%.?%d*)%s*,%s*(-?%d+%.?%d*)')
-    if not x then toast('coords like: 6398, 23, -42', C.RED) return end
-    local destV = Vector3.new(tonumber(x), tonumber(y), tonumber(z))
+-- auto-drive: scan grid a* first, road network fallback. also called by
+-- the dynamic reroute when a static obstacle fences off the current route
+routeAndDrive = function(destV)
     local r = hrp()
     if not r then toast('no character', C.RED) return end
     toast('routing...', C.WHITE)
@@ -2306,7 +2359,14 @@ netGoBtn.MouseButton1Click:Connect(function()
                 distance = 0,
             },
         })
+        S.routeDest = destV -- after start (stopPlayback clears it otherwise)
     end)
+end
+
+netGoBtn.MouseButton1Click:Connect(function()
+    local x, y, z = coordsBox.Text:match('(-?%d+%.?%d*)%s*,%s*(-?%d+%.?%d*)%s*,%s*(-?%d+%.?%d*)')
+    if not x then toast('coords like: 6398, 23, -42', C.RED) return end
+    routeAndDrive(Vector3.new(tonumber(x), tonumber(y), tonumber(z)))
 end)
 
 -- ============================================================
