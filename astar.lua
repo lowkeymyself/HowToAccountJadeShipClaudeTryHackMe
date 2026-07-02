@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.5 -- road ground truth (workspace.roads tagging, 2x cheaper on
-           streets, off-road speed caps) + massive ui overhaul: riced
-           wm chrome, workspace tabs, waybar status, live k-chip dot
+    v4.6 -- normal-driver routing: roads-only when tags exist (off-road
+           allowed only in start/goal stubs), unrestricted search kept
+           strictly as a can't-connect fallback
 ]]
 
 -- ============================================================
@@ -1268,9 +1268,6 @@ function Scan.route(fromPos, toPos)
     local sKey, gKey = scanKey(sc.cx, sc.cz), scanKey(gc.cx, gc.cz)
     if sKey == gKey then return nil, 'already there' end
 
-    local open = heapNew()
-    local g, from = { [sKey] = 0 }, {}
-    heapPush(open, { 0, sc.cx, sc.cz })
     local dirs = {
         { 1, 0, 1 }, { -1, 0, 1 }, { 0, 1, 1 }, { 0, -1, 1 },
         { 1, 1, 1.414 }, { 1, -1, 1.414 }, { -1, 1, 1.414 }, { -1, -1, 1.414 },
@@ -1292,40 +1289,57 @@ function Scan.route(fromPos, toPos)
         hugCache[k2] = c
         return c
     end
-    local expanded, found = 0, false
-    while true do
-        local cur = heapPop(open)
-        if not cur then break end
-        local cx, cz = cur[2], cur[3]
-        local ck = scanKey(cx, cz)
-        if ck == gKey then found = true break end
-        expanded = expanded + 1
-        if expanded > 400000 then break end
-        local cy = grid[ck]
-        for _, d in ipairs(dirs) do
-            local nx, nz = cx + d[1], cz + d[2]
-            local nk = scanKey(nx, nz)
-            local ny = grid[nk]
-            if ny and math.abs(ny - cy) <= 4 then
-                -- no corner cutting on diagonals
-                if d[3] > 1 and not (grid[scanKey(cx + d[1], cz)] and grid[scanKey(cx, cz + d[2])]) then
-                    ny = nil
-                end
-                if ny then
-                    -- roads (workspace.roads ground truth) are ~2x cheaper:
-                    -- take streets like a citizen, cut grass only when smart
-                    local mult = Scan.roads[nk] and 1 or 1.9
-                    local ng = g[ck] + d[3] * mult + hugPenalty(nx, nz, nk)
-                    if not g[nk] or ng < g[nk] then
-                        g[nk] = ng
-                        from[nk] = ck
-                        heapPush(open, { ng + math.sqrt((gc.cx - nx) ^ 2 + (gc.cz - nz) ^ 2), nx, nz })
+    -- start/goal stubs: the only places off-road driving is allowed when
+    -- road tags exist (leaving a parking lot, arriving at the door)
+    local function nearStub(x, z)
+        return math.max(math.abs(x - sc.cx), math.abs(z - sc.cz)) <= 12
+            or math.max(math.abs(x - gc.cx), math.abs(z - gc.cz)) <= 12
+    end
+    local function search(roadsOnly)
+        local open = heapNew()
+        local g, fr = { [sKey] = 0 }, {}
+        heapPush(open, { 0, sc.cx, sc.cz })
+        local expanded = 0
+        while true do
+            local cur = heapPop(open)
+            if not cur then return nil end
+            local cx, cz = cur[2], cur[3]
+            local ck = scanKey(cx, cz)
+            if ck == gKey then return fr end
+            expanded = expanded + 1
+            if expanded > 400000 then return nil end
+            local cy = grid[ck]
+            for _, d in ipairs(dirs) do
+                local nx, nz = cx + d[1], cz + d[2]
+                local nk = scanKey(nx, nz)
+                local ny = grid[nk]
+                if ny and math.abs(ny - cy) <= 4 then
+                    -- no corner cutting on diagonals
+                    if d[3] > 1 and not (grid[scanKey(cx + d[1], cz)] and grid[scanKey(cx, cz + d[2])]) then
+                        ny = nil
+                    end
+                    -- roads-only: normal drivers stay on the pavement
+                    if roadsOnly and ny and not Scan.roads[nk] and not nearStub(nx, nz) then
+                        ny = nil
+                    end
+                    if ny then
+                        local mult = (roadsOnly or Scan.roads[nk]) and 1 or 1.9
+                        local ng = g[ck] + d[3] * mult + hugPenalty(nx, nz, nk)
+                        if not g[nk] or ng < g[nk] then
+                            g[nk] = ng
+                            fr[nk] = ck
+                            heapPush(open, { ng + math.sqrt((gc.cx - nx) ^ 2 + (gc.cz - nz) ^ 2), nx, nz })
+                        end
                     end
                 end
             end
         end
     end
-    if not found then return nil, 'no drivable route on the scan (disconnected area?)' end
+    -- roads-only first when tags exist; unrestricted only as a last resort
+    local from
+    if Scan.roadCount > 0 then from = search(true) end
+    if not from then from = search(false) end
+    if not from then return nil, 'no drivable route on the scan (disconnected area?)' end
 
     -- reconstruct cell chain
     local cells = {}
