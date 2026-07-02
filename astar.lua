@@ -1,9 +1,9 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v4.7 -- licensed driver toggle, dynamic reroute around 12s+ static
-           blockers (fenced cells), smarter stuck reverse, arrival
-           braking, throttle floor (no more crawling)
+    v4.8 -- scan auto-load on startup (rejoin-proof, loud errors),
+           velocity-only reverse (no gear shifting), path-direction
+           caution rays (pre-slow before stuck), faster road cruise
 ]]
 
 -- ============================================================
@@ -99,6 +99,7 @@ local S = {
     blockCells  = {},       -- "cx,cz" -> expiry: cells fenced off by reroutes
     speedMult   = 1.0,
     blocked     = nil,      -- {name=, class=, since=}
+    caution     = nil,      -- distance to a far on-line obstacle (pre-slow)
     clearSince  = nil,
     stuckSince  = nil,
     bucketErr   = {},       -- bucket -> max cross-track error this run
@@ -644,35 +645,46 @@ local function classifyBlocker(inst)
     return class
 end
 
--- returns blocking hit or nil. pts = path points, idx = current closest index
+-- returns (blocking hit, distance) or nil. casts along BOTH the travel
+-- direction and the expected path direction -- catches walls the route
+-- bends toward before the nose is even aimed at them
 local function scanAhead(sp, pts, idx)
     local spd = sp.AssemblyLinearVelocity.Magnitude
     local range = math.clamp(spd * 1.4, 14, 70)
-    local fwd = sp.CFrame.LookVector
     local vel = sp.AssemblyLinearVelocity
+    local dirs = {}
+    local fwd = sp.CFrame.LookVector
     if vel.Magnitude > 4 then fwd = vel.Unit end
+    table.insert(dirs, fwd)
+    local tp = pts[math.min(idx + 15, #pts)]
+    local pd = Vector3.new(tp[1] - sp.Position.X, 0, tp[3] - sp.Position.Z)
+    if pd.Magnitude > 2 then table.insert(dirs, pd.Unit) end
     local right = sp.CFrame.RightVector
     local origin = sp.Position + Vector3.new(0, 2, 0)
 
     refreshRayFilter({ playFolder })
-    for _, off in ipairs({ 0, 1.6, -1.6 }) do
-        local r = workspace:Raycast(origin + right * off, fwd * range, rayParams)
-        -- normal.Y > 0.6 = ground/slope, not a wall or object -- ignore
-        if r and r.Instance and r.Instance.CanCollide and r.Normal.Y <= 0.6 then
-            -- stage 2: does the hit actually sit in the path corridor ahead?
-            local hitP = r.Position
-            local minLat = math.huge
-            local hi = math.min(#pts, idx + 90)
-            for i = idx, hi do
-                local d = (Vector3.new(pts[i][1], 0, pts[i][3]) - Vector3.new(hitP.X, 0, hitP.Z)).Magnitude
-                if d < minLat then minLat = d end
-            end
-            if minLat < OBST_CORRIDOR then
-                return r.Instance
+    local best, bestD
+    for _, dir in ipairs(dirs) do
+        for _, off in ipairs({ 0, 1.6, -1.6 }) do
+            local r = workspace:Raycast(origin + right * off, dir * range, rayParams)
+            -- normal.Y > 0.6 = ground/slope, not a wall or object -- ignore
+            if r and r.Instance and r.Instance.CanCollide and r.Normal.Y <= 0.6 then
+                -- does the hit actually sit in the path corridor ahead?
+                local hitP = r.Position
+                local minLat = math.huge
+                local hi = math.min(#pts, idx + 90)
+                for i = idx, hi do
+                    local d = (Vector3.new(pts[i][1], 0, pts[i][3]) - Vector3.new(hitP.X, 0, hitP.Z)).Magnitude
+                    if d < minLat then minLat = d end
+                end
+                if minLat < OBST_CORRIDOR then
+                    local dist = (hitP - sp.Position).Magnitude
+                    if not bestD or dist < bestD then best, bestD = r.Instance, dist end
+                end
             end
         end
     end
-    return nil
+    return best, bestD
 end
 
 -- ============================================================
@@ -939,11 +951,14 @@ local function isRoadInst(inst)
 end
 
 function Scan.loadFile()
-    if not FS.ok then return false end
+    if not FS.ok then return false, 'no file api' end
+    local okR, raw = pcall(readfile, gameFolder .. '/scan.json')
+    if not okR or not raw or #raw < 10 then return false, 'no scan file' end
     local ok, data = pcall(function()
-        return HttpService:JSONDecode(readfile(gameFolder .. '/scan.json'))
+        return HttpService:JSONDecode(raw)
     end)
-    if not ok or not data or not data.cols then return false end
+    if not ok then return false, 'scan file corrupted: ' .. tostring(data):sub(1, 50) end
+    if not data or not data.cols then return false, 'scan file has no data' end
     Scan.grid, Scan.count, Scan.mats = {}, 0, {}
     Scan.roads, Scan.roadCount = {}, 0
     Scan.CELL = data.cell or 6
@@ -1406,7 +1421,7 @@ function Scan.route(fromPos, toPos)
         local segLen = math.sqrt((bx - ax) ^ 2 + (bz - az) ^ 2)
         local steps = math.max(math.floor(segLen / 3), 1)
         -- cruise faster on tagged roads, careful off-road
-        local segSpd = Scan.roads[scanKey(a[1], a[2])] and 35 or 20
+        local segSpd = Scan.roads[scanKey(a[1], a[2])] and 48 or 22
         for s = (wi == 1 and 0 or 1), steps do
             local t = s / steps
             table.insert(pts, { ax + (bx - ax) * t, ay + (by - ay) * t + 1, az + (bz - az) * t, segSpd })
@@ -1633,7 +1648,14 @@ function startPlayback(entry)
         obstAcc = obstAcc + dt
         if obstAcc >= OBST_TICK then
             obstAcc = 0
-            local blocker = scanAhead(sp2, pts, idx)
+            local blocker, bDist = scanAhead(sp2, pts, idx)
+            -- two-zone response: far hit on the line = caution (slow down
+            -- toward it), close hit = full brake-and-wait
+            S.caution = nil
+            if blocker and bDist and bDist > math.clamp(spd * 1.1, 12, 45) then
+                S.caution = bDist
+                blocker = nil
+            end
             if blocker then
                 S.clearSince = nil
                 if not S.blocked or S.blocked.inst ~= blocker then
@@ -1697,14 +1719,16 @@ function startPlayback(entry)
 
         -- stuck recovery: hardcoded reverse burst, then resume the path
         if os.clock() < reversingUntil then
-            applyDrive(-1, 0)
+            -- velocity-only reverse: NO keys -- some games (swf) shift
+            -- gears on S, which wrecks the recovery
+            applyDrive(0, 0)
             local lv = sp2.CFrame.LookVector
             local back = Vector3.new(-lv.X, 0, -lv.Z)
             if back.Magnitude > 0.1 then
                 back = back.Unit
                 local vel = sp2.AssemblyLinearVelocity
-                if vel:Dot(back) < 8 then
-                    sp2.AssemblyLinearVelocity = vel + back * (20 * dt)
+                if vel:Dot(back) < 10 then
+                    sp2.AssemblyLinearVelocity = vel + back * (28 * dt)
                 end
             end
             setPlayStatus('reversing -- unsticking', idx, #pts, spd, pts)
@@ -1819,6 +1843,11 @@ function startPlayback(entry)
         -- ease into the destination like a driver, not a dart
         if dEnd < 60 then
             targetSpd = math.min(targetSpd, math.max(dEnd * 0.35, 6))
+        end
+        -- caution: something sits on the line ahead -- approach it slowly
+        -- instead of driving into a panic stop
+        if S.caution then
+            targetSpd = math.min(targetSpd, math.max(S.caution * 0.35, 8))
         end
 
         -- throttle: proportional band with a firm floor -- tiny pwm duties
@@ -2167,7 +2196,7 @@ new('TextLabel', {
     BackgroundTransparency = 1, Font = FONT, TextSize = 11, TextColor3 = C.DIM,
     TextXAlignment = Enum.TextXAlignment.Left,
     Position = UDim2.new(0, 90, 0, 134), Size = UDim2.new(0, 120, 0, 26),
-    Text = 'speed mult', Parent = loadRight,
+    Text = 'speed x (1 = normal)', Parent = loadRight,
 })
 
 local invBtn = new('TextButton', {
@@ -2739,3 +2768,18 @@ if not FS.ok then
     toast('warning: executor lacks file api — saving disabled', C.YELLOW)
 end
 toast('konstant a* loaded — click the k icon', C.WHITE)
+
+-- auto-load the scan on startup so rejoining never needs a rescan.
+-- failures surface loudly so they can actually be fixed
+task.spawn(function()
+    task.wait(1.5)
+    if not FS.ok then return end
+    if Scan.count > 0 then return end
+    local ok, why = Scan.loadFile()
+    if ok then
+        pcall(Scan.fillHoles)
+        toast(('scan loaded from disk — %d cells (%d road)'):format(Scan.count, Scan.roadCount), C.GREEN)
+    elseif why ~= 'no scan file' then
+        toast('scan auto-load failed: ' .. tostring(why), C.RED)
+    end
+end)
