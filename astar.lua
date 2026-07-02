@@ -1411,6 +1411,14 @@ function Net.route(fromPos, toPos)
     if not Net.build() then return nil, 'no road segments recorded yet' end
     local sN, gN = Net.nearest(fromPos), Net.nearest(toPos)
     if not sN or not gN then return nil, 'network empty' end
+    -- coverage honesty: a destination far from every recorded road must
+    -- NOT silently reroute to the closest old segment (bank hijack bug)
+    if gN.d > 150 then
+        return nil, ('destination is %d studs from any recorded road -- scan or record that area'):format(gN.d)
+    end
+    if sN.d > 400 then
+        return nil, ('you are %d studs from any recorded road'):format(sN.d)
+    end
 
     -- same-segment direct route: always valid, used as shortcut when on
     -- the same edge and as fallback whenever the graph can't help
@@ -2259,6 +2267,18 @@ netGoBtn.MouseButton1Click:Connect(function()
             toast(rerr or 'routing failed', C.RED)
             netStatus.Text = 'routing failed'
             return
+        end
+        -- final honesty gate: if the route ends far from the requested
+        -- destination, the area isn't covered -- refuse instead of
+        -- driving somewhere else and calling it arrival
+        do
+            local lastP = route[#route]
+            local endGap = (Vector3.new(lastP[1], lastP[2], lastP[3]) - destV).Magnitude
+            if endGap > 150 then
+                toast(('route ends %d studs short — that area is not scanned yet, extend the scan toward it'):format(endGap), C.RED)
+                netStatus.Text = string.format('coverage gap: %d studs', endGap)
+                return
+            end
         end
         netStatus.Text = string.format('routed via %s — %d points', mode, #route)
         -- final approach: short straight taper from the road exit to the
