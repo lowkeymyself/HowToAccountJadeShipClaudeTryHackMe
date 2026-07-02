@@ -1,8 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.7 -- corner anticipation: brakes before turns via curvature scan,
-           speed-scaled centering + hard steer ceiling at velocity
+    v1.8 -- offset-aware authority: gentle when on the line, full pull
+           when genuinely off it -- accuracy at any speed
 ]]
 
 -- ============================================================
@@ -871,8 +871,13 @@ function startPlayback(entry)
                 local latVel = Vector3.new(vel.X, 0, vel.Z):Dot(rightOf)
                 local predLat = lat + latVel * 0.35
                 ct = -math.clamp(predLat * 0.22 * (1 + math.abs(predLat) / 5), -0.9, 0.9)
-                -- full centering authority at cruise is a spin at speed
-                ct = ct / (1 + spd / 55)
+                -- offset-aware speed softening: near the line, high-speed
+                -- authority is cut (stability, no weave). genuinely off the
+                -- line (1 -> 4 studs) the softening fades out -- accuracy
+                -- demands full pull regardless of speed
+                local soften = 1 / (1 + spd / 55)
+                local offBlend = math.clamp((math.abs(predLat) - 1) / 3, 0, 1)
+                ct = ct * (soften + (1 - soften) * offBlend)
             end
         end
         -- hard ceiling: at high speed full lock is never survivable
