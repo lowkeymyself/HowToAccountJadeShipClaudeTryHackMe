@@ -1,8 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.3 -- cross-track trim: fine lateral steering glues the vehicle's
-           middle onto the recorded line (big-hitbox accuracy)
+    v1.4 -- distance-proportional steering: stud-fine on the line,
+           progressively harder the farther off, up to full lock
 ]]
 
 -- ============================================================
@@ -805,13 +805,16 @@ function startPlayback(entry)
         local rel = sp2.CFrame:PointToObjectSpace(target)
         local angle = math.atan2(rel.X, -rel.Z)
         local steerDiv = math.rad(30) * (1 + spd / 50)
+        -- soft-progressive response: keeps micro corrections small but
+        -- restores mid-range authority (pure squaring choked real turns)
         local x = math.clamp(angle / steerDiv, -1, 1)
-        local p = x * math.abs(x)
+        local p = x * (0.4 + 0.6 * math.abs(x))
         local yawDamp = math.clamp(sp2.AssemblyAngularVelocity.Y * 0.35, -0.6, 0.6)
 
-        -- cross-track trim: fine lateral correction that glues the
-        -- vehicle's middle onto the line. signed distance to the path,
-        -- tiny counter-steer, hard-capped so it can only ever nudge
+        -- cross-track steering: proportional to distance off the line --
+        -- sub-stud offsets get fine trim, the farther off it is the harder
+        -- it turns back, up to near-full lock
+        --   0.5 studs -> ~0.05   2 studs -> ~0.25   5 studs -> ~0.80
         local ct = 0
         do
             local a = pts[idx]
@@ -821,7 +824,7 @@ function startPlayback(entry)
                 d = d.Unit
                 local rightOf = Vector3.new(-d.Z, 0, d.X)
                 local lat = Vector3.new(pos.X - a[1], 0, pos.Z - a[3]):Dot(rightOf)
-                ct = -math.clamp(lat * 0.06, -0.22, 0.22)
+                ct = -math.clamp(lat * 0.10 * (1 + math.abs(lat) / 8), -0.85, 0.85)
             end
         end
         local steer = math.clamp(p + yawDamp + ct, -1, 1)
