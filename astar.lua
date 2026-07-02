@@ -1,8 +1,8 @@
 --[[
     konstant a*  //  universal waypoint auto-driver
     record a path by driving it. save it. let the script drive it back.
-    v1.1 -- pwm analog control (controller emulation through keys),
-           speed-scaled steering authority, no more seat/vim mode split
+    v1.2 -- pd steering (squared response + yaw damping, no more spirals),
+           additive velocity assist so it always moves and always brakes
 ]]
 
 -- ============================================================
@@ -770,10 +770,16 @@ function startPlayback(entry)
             end
         end
 
-        -- blocked: brake to a stop and hold
+        -- blocked: brake to a stop and hold (physics-assisted, additive)
         if S.blocked then
             if spd > 1.5 then
                 applyDrive(-1, 0)
+                local vel = sp2.AssemblyLinearVelocity
+                local horiz = Vector3.new(vel.X, 0, vel.Z)
+                if horiz.Magnitude > 0.5 then
+                    local decel = math.min(horiz.Magnitude, 45 * dt)
+                    sp2.AssemblyLinearVelocity = vel - horiz.Unit * decel
+                end
             else
                 applyDrive(0, 0)
             end
@@ -786,14 +792,20 @@ function startPlayback(entry)
             return
         end
 
-        -- pure pursuit steering. authority shrinks as speed grows so
-        -- high-speed corrections stay gentle and low-speed turns get full lock
+        -- pd pure pursuit steering:
+        --  p: squared response -- small errors get micro corrections,
+        --     real turns still reach full lock
+        --  d: yaw-rate damping -- if already rotating toward the line,
+        --     back off instead of piling on (kills overshoot spirals)
         local L = math.clamp(LOOKAHEAD_MIN + spd * 0.30, LOOKAHEAD_MIN, LOOKAHEAD_MAX)
         local target = lookaheadPoint(pts, idx, L)
         local rel = sp2.CFrame:PointToObjectSpace(target)
         local angle = math.atan2(rel.X, -rel.Z)
-        local steerDiv = math.rad(26) * (1 + spd / 45)
-        local steer = math.clamp(angle / steerDiv, -1, 1)
+        local steerDiv = math.rad(30) * (1 + spd / 50)
+        local x = math.clamp(angle / steerDiv, -1, 1)
+        local p = x * math.abs(x)
+        local yawDamp = math.clamp(sp2.AssemblyAngularVelocity.Y * 0.35, -0.6, 0.6)
+        local steer = math.clamp(p + yawDamp, -1, 1)
 
         -- target speed: recorded profile x multiplier x learned factor, curve slowdown
         local recSpd = pts[math.min(idx + 4, #pts)][4] or 16
@@ -801,16 +813,35 @@ function startPlayback(entry)
         local curveCut = 1 - math.min(math.abs(angle) / math.rad(60), 1) * 0.5
         local targetSpd = math.max(6, recSpd * S.speedMult * learned * curveCut)
 
-        -- recovery mode: too far off line
+        -- recovery mode: too far off line -- slow down, let the controller
+        -- steer naturally (boosting gain here is what caused spirals)
         if err > OFFPATH_SOFT then
             targetSpd = math.min(targetSpd, 10)
-            steer = math.clamp(steer * 1.6, -1, 1)
         end
 
         -- throttle: proportional band, full send when well under target
         local throttle = math.clamp((targetSpd - spd) / 5, -1, 1)
         if spd < targetSpd * 0.5 then throttle = 1 end
         applyDrive(throttle, steer)
+
+        -- velocity assist: physics-level, additive (never a multiplier --
+        -- works from a dead stop). fills whatever gap the game's own
+        -- controls leave; contributes nothing once at target speed.
+        do
+            local vel = sp2.AssemblyLinearVelocity
+            local horiz = Vector3.new(vel.X, 0, vel.Z)
+            local flatT = Vector3.new(target.X - sp2.Position.X, 0, target.Z - sp2.Position.Z)
+            if flatT.Magnitude > 0.5 then
+                local dir = flatT.Unit
+                if throttle > 0.05 and horiz.Magnitude < targetSpd then
+                    local accel = math.min((targetSpd - horiz.Magnitude) * 2, 30)
+                    sp2.AssemblyLinearVelocity = vel + dir * (accel * dt)
+                elseif throttle < -0.05 and horiz.Magnitude > 1 then
+                    local decel = math.min(horiz.Magnitude, math.min(-throttle * 40, 45) * dt)
+                    sp2.AssemblyLinearVelocity = vel - horiz.Unit * decel
+                end
+            end
+        end
 
         -- stuck detection
         if throttle > 0.7 and spd < 1.5 then
