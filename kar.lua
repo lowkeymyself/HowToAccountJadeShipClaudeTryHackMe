@@ -6,6 +6,24 @@ local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local plr = Players.LocalPlayer
 
+-- Safe GUI parenting: CoreGui is blocked on many executors/games.
+-- Falls back to gethui()/get_hidden_gui() so custom panels still build.
+local function getGuiParent()
+    local ok, h = pcall(function() return gethui and gethui() end)
+    if ok and h then return h end
+    ok, h = pcall(function() return get_hidden_gui and get_hidden_gui() end)
+    if ok and h then return h end
+    return CoreGui
+end
+local function safeParentGui(gui)
+    local parent = getGuiParent()
+    local ok, err = pcall(function() gui.Parent = parent end)
+    if not ok then
+        pcall(function() gui.Parent = plr and plr:FindFirstChildOfClass('PlayerGui') end)
+    end
+    return gui
+end
+
 -- 1 mph = 0.44704 m/s, 1 stud ~= 0.28 m; precise ratio matches the in-game HUD
 local MPH_TO_STUDS = 1.5966
 local STUDS_TO_MPH = 0.6264
@@ -99,8 +117,8 @@ if _G.SMCleanup then
     _G.SMCleanup = nil
 end
 
-local playSuccess -- defined after gui is created below
-local showToast   -- defined after gui is created below
+local playSuccess = function() end -- assigned for real after gui is created below
+local showToast = function() end   -- assigned for real after gui is created below
 local minimapGui  -- defined after gui is created below
 
 -- universal bike/vehicle discovery
@@ -170,9 +188,21 @@ local STOPPIE_KEY      = Enum.KeyCode.Comma
 local STOPPIE_KEY_LBL  = ','
 
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
-local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
-local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+local function safeLoadUrl(url)
+    local ok, src = pcall(function() return game:HttpGet(url) end)
+    if not ok or not src or src == '' then return nil, 'HttpGet failed: ' .. tostring(src) end
+    local ok2, fn = pcall(loadstring, src)
+    if not ok2 then return nil, 'loadstring failed' end
+    local ok3, mod = pcall(fn)
+    if not ok3 then return nil, 'module init failed: ' .. tostring(mod) end
+    return mod, nil
+end
+local Library, libErr = safeLoadUrl(repo .. 'Library.lua')
+assert(Library, 'Konstant: Linoria Library failed to load - ' .. tostring(libErr))
+local ThemeManager = (function() local m = safeLoadUrl(repo .. 'addons/ThemeManager.lua'); return m end)()
+if not ThemeManager then warn('Konstant: ThemeManager failed to load - Settings theme section disabled') end
+local SaveManager = (function() local m = safeLoadUrl(repo .. 'addons/SaveManager.lua'); return m end)()
+if not SaveManager then warn('Konstant: SaveManager failed to load - configs disabled') end
 
 local Window = Library:CreateWindow({
     Title = BRAND_TITLE,
@@ -183,7 +213,7 @@ local Window = Library:CreateWindow({
 })
 pcall(function()
     Library.ScreenGui.DisplayOrder = 999
-    Library.ScreenGui.Parent = CoreGui
+    safeParentGui(Library.ScreenGui)
 end)
 -- menu toggle key: Delete (override Linoria's default RightControl)
 -- Linoria forks use different property names; set every known variant.
@@ -1402,7 +1432,12 @@ Right:AddDivider()
 Right:AddButton({
     Text = VEHICLE_TERM_CAP .. ' Customization',
     Func = function()
-        if bikeCustGui then bikeCustGui.Enabled = not bikeCustGui.Enabled end
+        if bikeCustGui then
+            bikeCustGui.Enabled = not bikeCustGui.Enabled
+        else
+            showToast('Customization panel did not build - check console (F9) for error')
+            warn('Konstant: bikeCustGui is nil - init aborted before customization panel was built')
+        end
     end
 })
 
@@ -1432,7 +1467,7 @@ local PasswordGate = (function()
         psg.ResetOnSpawn   = false
         psg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         psg.DisplayOrder   = 100
-        psg.Parent         = CoreGui
+        safeParentGui(psg)
 
         -- card pinned to top-center
         local card = Instance.new('Frame')
@@ -2932,7 +2967,7 @@ gui.Name = 'SpawnerGui'
 gui.ResetOnSpawn = false
 gui.DisplayOrder = 1000  -- above Linoria (999), below customizer (1001)
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.Parent = CoreGui
+safeParentGui(gui)
 
 local sfx = Instance.new('Sound')
 sfx.SoundId = 'rbxassetid://131039887376992'
@@ -3000,7 +3035,7 @@ do
     udGui.ResetOnSpawn   = false
     udGui.DisplayOrder   = 1005  -- above every panel (Linoria 999, panels 1001)
     udGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    udGui.Parent         = CoreGui
+    safeParentGui(udGui)
 
     local udFrame = Instance.new('Frame')
     udFrame.Size             = UDim2.new(0, 120, 0, 30)
@@ -3253,9 +3288,13 @@ local hideKey = Enum.KeyCode.Delete
 UIS.InputBegan:Connect(function(inp, gp)
     if gp then return end
     if inp.KeyCode == hideKey then
-        Library:Toggle()
-        spawnerFrame.Visible = false
-        Toggles.SpawnerToggle:SetValue(false)
+        pcall(function() Library:Toggle() end)
+        pcall(function() spawnerFrame.Visible = false end)
+        pcall(function()
+            if Toggles and Toggles.SpawnerToggle then
+                Toggles.SpawnerToggle:SetValue(false)
+            end
+        end)
     end
 end)
 
@@ -3328,7 +3367,7 @@ do
     bc.DisplayOrder   = 1001   -- above Linoria's main window (999)
     bc.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     bc.Enabled        = false
-    bc.Parent         = CoreGui
+    safeParentGui(bc)
     bikeCustGui       = bc
 
     local panel = Instance.new('Frame')
@@ -3573,6 +3612,9 @@ do
                     -- auto-build on first open so buttons don't say "No parts selected"
                     pcall(ppBuildTreePublic)
                 end
+            else
+                showToast('Advanced Selection did not build - check console (F9) for error')
+                warn('Konstant: partPickerGui is nil - init aborted before part picker was built')
             end
         end)
     end
@@ -4375,10 +4417,10 @@ do
     local pp = Instance.new('ScreenGui')
     pp.Name           = 'PartPickerGui'
     pp.ResetOnSpawn   = false
-    pp.DisplayOrder   = 996
+    pp.DisplayOrder   = 1002 -- above customizer (1001), below undo (1005); was 996 (hidden behind Linoria)
     pp.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     pp.Enabled        = false
-    pp.Parent         = CoreGui
+    safeParentGui(pp)
     partPickerGui     = pp
 
     -- 640 = 360 tree | 1 divider | 279 inspector
@@ -5112,14 +5154,14 @@ do
             h.Style   = Enum.HandlesStyle.Movement
             h.Color3  = Color3.fromRGB(255, 200, 60)
             h.Adornee = adornee
-            h.Parent  = CoreGui
+            safeParentGui(h)
             activeGizmo = h
             wireMove(part, h)
         elseif gizmoMode == 'rot' then
             local h = Instance.new('ArcHandles')
             h.Color3  = Color3.fromRGB(255,  80,  80)
             h.Adornee = adornee
-            h.Parent  = CoreGui
+            safeParentGui(h)
             activeGizmo = h
             wireRot(part, h)
         else -- 'size'
@@ -5127,7 +5169,7 @@ do
             h.Style   = Enum.HandlesStyle.Resize
             h.Color3  = Color3.fromRGB(100, 220, 100)
             h.Adornee = adornee
-            h.Parent  = CoreGui
+            safeParentGui(h)
             activeGizmo = h
             wireSize(part, h)
         end
@@ -5528,10 +5570,10 @@ do
         local cpGui = Instance.new('ScreenGui')
         cpGui.Name           = 'PPColorPickerGui'
         cpGui.ResetOnSpawn   = false
-        cpGui.DisplayOrder   = 999
+        cpGui.DisplayOrder   = 1004 -- above picker (1002), below undo (1005); was 999 (z-fight with Linoria)
         cpGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
         cpGui.Enabled        = false
-        cpGui.Parent         = CoreGui
+        safeParentGui(cpGui)
 
         local CP_W      = 220
         local SV_MARGIN = 15
@@ -6544,7 +6586,7 @@ minimapGui.ResetOnSpawn   = false
 minimapGui.DisplayOrder   = 998
 minimapGui.Enabled        = false
 minimapGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-minimapGui.Parent         = CoreGui
+safeParentGui(minimapGui)
 
 local mapFrame = Instance.new('Frame')
 mapFrame.Size               = UDim2.new(0, MAP_SMALL, 0, MAP_SMALL + 22)
@@ -7152,7 +7194,7 @@ do
     overlayGui.DisplayOrder   = 900
     overlayGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     overlayGui.Enabled        = false
-    overlayGui.Parent         = CoreGui
+    safeParentGui(overlayGui)
 
     -- outer container, bottom-right with 24px margin
     local root = Instance.new('Frame')
@@ -7372,17 +7414,29 @@ end
 -- ============================================================
 local SettingsRight = Tabs.Settings:AddRightGroupbox('Theme')
 
-SaveManager:SetLibrary(Library)
-SaveManager:IgnoreThemeSettings()
-SaveManager:SetFolder('Konstant')
-SaveManager:BuildConfigSection(Tabs.Settings)
+if SaveManager then
+    pcall(function()
+        SaveManager:SetLibrary(Library)
+        SaveManager:IgnoreThemeSettings()
+        SaveManager:SetFolder('Konstant')
+        SaveManager:BuildConfigSection(Tabs.Settings)
+    end)
+else
+    warn('Konstant: skipping SaveManager section (failed to load)')
+end
 
-ThemeManager:SetLibrary(Library)
-ThemeManager:SetFolder('Konstant')
-ThemeManager:ApplyToGroupbox(SettingsRight)
+if ThemeManager then
+    pcall(function()
+        ThemeManager:SetLibrary(Library)
+        ThemeManager:SetFolder('Konstant')
+        ThemeManager:ApplyToGroupbox(SettingsRight)
+    end)
+else
+    warn('Konstant: skipping ThemeManager section (failed to load)')
+end
 
 -- Load autoload config after a short delay so all game systems finish initializing
 -- before toggle callbacks fire (loading immediately breaks the game on join)
 task.delay(3, function()
-    SaveManager:LoadAutoloadConfig()
+    if SaveManager then pcall(function() SaveManager:LoadAutoloadConfig() end) end
 end)
