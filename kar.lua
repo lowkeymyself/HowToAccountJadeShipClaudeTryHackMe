@@ -5000,6 +5000,59 @@ do
     ppI.texApplyBtn = ppRBtn('Apply Texture',  12, _y, 118)
     ppI.texRmBtn    = ppRBtn('Remove Decals', 138, _y, 118)
 
+    -- copy/paste: parts serialize relative to the vehicle seat so data
+    -- pasted onto a different vehicle lands in the same seat-relative spot
+    ppSect('COPY / PASTE')
+    do
+        local function dataBox(y, placeholder)
+            local b = Instance.new('TextBox')
+            b.Size = UDim2.new(0, 244, 0, 48); b.Position = UDim2.new(0, 12, 0, y)
+            b.BackgroundColor3 = BG2; b.BorderSizePixel = 1; b.BorderColor3 = BORDER
+            b.Text = ''; b.PlaceholderText = placeholder; b.PlaceholderColor3 = SUBTEXT
+            b.TextColor3 = TEXT; b.Font = Enum.Font.Code; b.TextSize = 10
+            b.MultiLine = true; b.TextWrapped = true; b.ClearTextOnFocus = false
+            b.TextXAlignment = Enum.TextXAlignment.Left
+            b.TextYAlignment = Enum.TextYAlignment.Top
+            b.ClipsDescendants = true; b.ZIndex = 12; b.Parent = ppRScroll
+            b.Focused:Connect(function() b.BorderColor3 = ACCENT end)
+            b.FocusLost:Connect(function() b.BorderColor3 = BORDER end)
+            return b
+        end
+        _y = ppRow(28)
+        ppI.copyBtn  = ppRBtn('Copy Selected', 12, _y, 118)
+        ppI.clearCpBtn = ppRBtn('Clear Boxes', 138, _y, 118)
+        _y = ppRow(54)
+        ppI.copyOut  = dataBox(_y, 'Copied data shows here (also sent to clipboard)')
+        _y = ppRow(54)
+        ppI.pasteIn  = dataBox(_y, 'Paste part data here...')
+        _y = ppRow(28)
+        ppI.pasteBtn = ppRBtn('Paste', 12, _y, 118, true)
+        ppI.pasteDelBtn = ppRBtn('Delete Pasted', 138, _y, 118)
+        _y = ppRow(28); ppRLbl('Collide', 12, _y + 3, 90)
+        ppI.pasteCollTog = ppRTog(196, _y, 60, false)
+        _y = ppRow(28); ppRLbl('Weight', 12, _y + 3, 90)
+        ppI.pasteWeightIn  = ppRInp('0', 108, _y, 58)
+        ppI.pasteWeightBtn = ppRBtn('Set', 172, _y, 84)
+        _y = ppRow(44)
+        local hint = ppRLbl('Collide/Weight apply to selected pasted parts and to new pastes. Weight 0 = massless. Unmatched parts spawn mid-vehicle.',
+            12, _y, 244, SUBTEXT)
+        hint.Size = UDim2.new(0, 244, 0, 42); hint.TextWrapped = true; hint.TextSize = 10
+    end
+
+    -- mouse-select ignore list: name patterns + explicit parts + invisible
+    ppSect('MOUSE SELECT IGNORE')
+    _y = ppRow(28); ppRLbl('Names', 12, _y + 3, 44)
+    ppI.ignNamesIn = ppRInp('Weight', 58, _y, 198)
+    ppI.ignNamesIn.TextXAlignment = Enum.TextXAlignment.Left
+    ppI.ignNamesIn.PlaceholderText = 'comma separated, e.g. Weight, Hitbox'
+    _y = ppRow(28)
+    ppI.ignSelBtn   = ppRBtn('Ignore Selected', 12, _y, 118)
+    ppI.ignClearBtn = ppRBtn('Clear Ignored', 138, _y, 118)
+    _y = ppRow(28); ppRLbl('Skip Invisible', 12, _y + 3, 110)
+    ppI.ignInvisTog = ppRTog(196, _y, 60, false)
+    _y = ppRow(22)
+    ppI.ignCountLbl = ppRLbl('0 parts ignored by hand', 12, _y, 244, SUBTEXT)
+
     -- bottom padding
     ppRY = ppRY + 12
 
@@ -5308,7 +5361,8 @@ do
         -- collect child instances worth showing in the tree
         local childInsts = {}
         for _, child in ipairs(inst:GetChildren()) do
-            if child:IsA('BasePart') or child:IsA('Model') or child:IsA('Folder') then
+            if (child:IsA('BasePart') or child:IsA('Model') or child:IsA('Folder'))
+                and not child:GetAttribute('KPastePhys') then
                 table.insert(childInsts, child)
             end
         end
@@ -6058,6 +6112,7 @@ do
 
         -- re-adornee the gizmos to the new primary (no-op if gizmos are off)
         if ppI.attachGizmos then ppI.attachGizmos() end
+        if ppI.syncPasteUI then ppI.syncPasteUI(first) end
     end
 
     -- Show Invisible Only toggle
@@ -6105,6 +6160,76 @@ do
         end
     end
 
+    -- ignore list: explicit instances (ancestors count too), name substrings
+    -- from the Names box, and optionally anything fully transparent
+    ppI.ignored = {}
+    ppI.ignoreSkipInvis = false
+    ppI.refreshIgnCount = function()
+        local n = 0
+        for inst in pairs(ppI.ignored) do
+            if inst.Parent then n += 1 else ppI.ignored[inst] = nil end
+        end
+        ppI.ignCountLbl.Text = n .. (n == 1 and ' part' or ' parts') .. ' ignored by hand'
+    end
+    ppI.isIgnored = function(inst)
+        if ppI.ignoreSkipInvis and inst:IsA('BasePart') and inst.Transparency >= 1 then
+            return true
+        end
+        local pats = {}
+        for w in string.gmatch(ppI.ignNamesIn.Text or '', '[^,]+') do
+            w = w:match('^%s*(.-)%s*$'):lower()
+            if w ~= '' then pats[#pats + 1] = w end
+        end
+        local cur = inst
+        while cur and cur ~= workspace and cur ~= game do
+            if ppI.ignored[cur] then return true end
+            local nm = cur.Name:lower()
+            for _, w in ipairs(pats) do
+                if nm:find(w, 1, true) then return true end
+            end
+            cur = cur.Parent
+        end
+        return false
+    end
+    -- raycast from the cursor, stepping past ignored parts and the character
+    ppI.pickUnderMouse = function(mouse)
+        local ray = mouse.UnitRay
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.IgnoreWater = true
+        local excl = { plr.Character }
+        params.FilterDescendantsInstances = excl
+        for _ = 1, 64 do
+            local res = workspace:Raycast(ray.Origin, ray.Direction * 5000, params)
+            if not res then return nil end
+            local hit = res.Instance
+            if not ppI.isIgnored(hit) then return hit end
+            excl[#excl + 1] = hit
+            params.FilterDescendantsInstances = excl
+        end
+        return nil
+    end
+
+    ppI.ignSelBtn.MouseButton1Click:Connect(function()
+        local n = 0
+        for inst in pairs(ppSelBoxes) do
+            if inst and inst.Parent and not ppI.ignored[inst] then
+                ppI.ignored[inst] = true; n += 1
+            end
+        end
+        ppI.refreshIgnCount()
+        showToast(n > 0 and ('Mouse select now ignores ' .. n .. ' more') or 'No parts selected')
+    end)
+    ppI.ignClearBtn.MouseButton1Click:Connect(function()
+        table.clear(ppI.ignored)
+        ppI.refreshIgnCount()
+        showToast('Ignore list cleared (name filter still applies)')
+    end)
+    ppI.ignInvisTog.MouseButton1Click:Connect(function()
+        ppI.ignoreSkipInvis = ppI.ignInvisTog.Text == 'OFF'
+        ppI.setTog(ppI.ignInvisTog, ppI.ignoreSkipInvis)
+    end)
+
     -- Mouse Selection: click 3D parts to select; Ctrl+click behaves like tree
     local ppMouseConn
     local function ppSetMouseSel(on)
@@ -6121,8 +6246,8 @@ do
             local isR = input.UserInputType == Enum.UserInputType.MouseButton2
             if not (isL or isR) then return end
             if not mouse then return end
-            local target = mouse.Target
-            if not target or not target:IsA('BasePart') then return end
+            local target = ppI.pickUnderMouse(mouse)
+            if not target or not target:IsA('BasePart') or target:IsA('Terrain') then return end
             -- right-click: skip the tree flow, just pop the context menu
             if isR then
                 if ppShowContextMenu then
@@ -6190,7 +6315,7 @@ do
         ppCtxJustCreated = true
         task.defer(function() ppCtxJustCreated = false end)
         local menu = Instance.new('Frame')
-        menu.Size = UDim2.new(0, 160, 0, 60)
+        menu.Size = UDim2.new(0, 160, 0, 120)
         menu.Position = UDim2.new(0, x, 0, y)
         menu.BackgroundColor3 = BG2
         menu.BorderSizePixel = 1
@@ -6230,6 +6355,29 @@ do
             showToast('Deleted "' .. name .. '"')
             ppKillContextMenu()
             if ppBuildTreePublic then task.defer(function() pcall(ppBuildTreePublic) end) end
+        end)
+        local function ctxBtn(text, y, onClick)
+            local b = Instance.new('TextButton')
+            b.Size = UDim2.new(1, -8, 0, 26); b.Position = UDim2.new(0, 4, 0, y)
+            b.BackgroundColor3 = BGSUB; b.BorderSizePixel = 0
+            b.Text = text; b.TextColor3 = TEXT; b.Font = Enum.Font.Code; b.TextSize = 12
+            b.AutoButtonColor = true; b.ZIndex = 201; b.Parent = menu
+            b.MouseButton1Click:Connect(function() ppKillContextMenu(); onClick() end)
+        end
+        ctxBtn('Copy Data', 58, function()
+            local list = {}
+            if inst:IsA('BasePart') then list[1] = inst
+            else
+                for _, d in ipairs(inst:GetDescendants()) do
+                    if d:IsA('BasePart') then list[#list + 1] = d end
+                end
+            end
+            if ppI.copyParts then ppI.copyParts(list) end
+        end)
+        ctxBtn(ppI.ignored[inst] and 'Un-ignore (mouse)' or 'Ignore (mouse)', 88, function()
+            ppI.ignored[inst] = (not ppI.ignored[inst]) or nil
+            ppI.refreshIgnCount()
+            showToast((ppI.ignored[inst] and 'Ignoring "' or 'Un-ignored "') .. inst.Name .. '"')
         end)
     end
     -- dismiss on any click outside the menu
@@ -6549,6 +6697,533 @@ do
         else showToast('Removed ' .. n .. ' decal(s)') end
         ppRefreshInspector()
     end)
+
+    do
+        local HS = game:GetService('HttpService')
+        local PREFIX = 'KPART1:'
+        local setClip = setclipboard or toclipboard or (syn and syn.write_clipboard)
+        local clipCache = nil   -- { key, clones } from the last copy this session
+        local pasted = {}       -- [part] = { anchor, offset, last, lastAnchor, collide, weight, twin, weld }
+        local pasteState = { collide = false, weight = 0 }
+        local followConn
+        local GENERIC = { Part = true, MeshPart = true, Union = true, WedgePart = true,
+                          Handle = true, UnionOperation = true }
+
+        -- %.9g round-trips float32 exactly, which is what Roblox stores
+        local function enc(...)
+            local t = { ... }
+            for i, v in ipairs(t) do t[i] = string.format('%.9g', v) end
+            return table.concat(t, ',')
+        end
+        local function dec(s)
+            local t = {}
+            for x in string.gmatch(s or '', '[^,]+') do t[#t + 1] = tonumber(x) end
+            return t
+        end
+        local function decV3(s)
+            local t = dec(s)
+            if #t < 3 then return nil end
+            return Vector3.new(t[1], t[2], t[3])
+        end
+        local function decC3(s)
+            local t = dec(s)
+            if #t < 3 then return nil end
+            return Color3.new(t[1], t[2], t[3])
+        end
+        local function decCF(s)
+            local t = dec(s)
+            if #t ~= 12 then return nil end
+            return CFrame.new(table.unpack(t))
+        end
+        local function get(o, k)
+            local ok, v = pcall(function() return o[k] end)
+            if ok then return v end
+        end
+        local function set(o, k, v)
+            if v ~= nil then pcall(function() o[k] = v end) end
+        end
+
+        local function ownSeat()
+            local char = plr.Character
+            local hum = char and char:FindFirstChildWhichIsA('Humanoid')
+            return hum and hum.SeatPart
+        end
+        -- vehicle a part belongs to: your own root if inside it, else its top model
+        local function rootOf(part)
+            local own = ppGetRootModel()
+            if own and part:IsDescendantOf(own) then return own end
+            local top = part
+            while top.Parent and top.Parent ~= workspace do top = top.Parent end
+            return top:IsA('Model') and top or nil
+        end
+        -- reference frame for layout: seat, else pivot
+        local function refFor(root)
+            local own = ppGetRootModel()
+            local seat = ownSeat()
+            if root and own == root and seat then return seat.CFrame end
+            if root then
+                local vs = root:FindFirstChildWhichIsA('VehicleSeat', true)
+                    or root:FindFirstChildWhichIsA('Seat', true)
+                if vs then return vs.CFrame end
+                return root:GetPivot()
+            end
+            return seat and seat.CFrame or CFrame.new()
+        end
+        -- the part this one is rigidly attached to (pasted parts report their anchor)
+        local function partnerOf(p)
+            if pasted[p] then return pasted[p].anchor end
+            for _, j in ipairs(p:GetJoints()) do
+                local a, b
+                if j:IsA('JointInstance') or j:IsA('WeldConstraint') then
+                    a, b = j.Part0, j.Part1
+                elseif j:IsA('RigidConstraint') then
+                    a = j.Attachment0 and j.Attachment0.Parent
+                    b = j.Attachment1 and j.Attachment1.Parent
+                end
+                local other = (a == p) and b or a
+                if other and other ~= p and other:IsA('BasePart') then return other end
+            end
+        end
+        local function pathIn(root, inst)
+            local names, cur = {}, inst
+            while cur and cur ~= root do
+                table.insert(names, 1, cur.Name); cur = cur.Parent
+            end
+            return cur == root and names or nil
+        end
+
+        local function meshSizeOf(p)
+            local ms = get(p, 'MeshSize')
+            if typeof(ms) ~= 'Vector3' and gethiddenproperty then
+                local ok, v = pcall(gethiddenproperty, p, 'MeshSize')
+                if ok then ms = v end
+            end
+            return typeof(ms) == 'Vector3' and ms or nil
+        end
+
+        local function childRec(ch)
+            local r = { k = ch.ClassName }
+            if ch:IsA('Decal') then
+                r.tx = ch.Texture; r.f = ch.Face.Name; r.t = ch.Transparency
+                r.col = enc(ch.Color3.R, ch.Color3.G, ch.Color3.B); r.z = ch.ZIndex
+                if ch:IsA('Texture') then
+                    r.su = enc(ch.StudsPerTileU, ch.StudsPerTileV, ch.OffsetStudsU, ch.OffsetStudsV)
+                end
+            elseif ch:IsA('SpecialMesh') then
+                r.mt = ch.MeshType.Name; r.id = ch.MeshId; r.tx = ch.TextureId
+                r.sc = enc(ch.Scale.X, ch.Scale.Y, ch.Scale.Z)
+                r.of = enc(ch.Offset.X, ch.Offset.Y, ch.Offset.Z)
+                r.vc = enc(ch.VertexColor.X, ch.VertexColor.Y, ch.VertexColor.Z)
+            elseif ch:IsA('DataModelMesh') then
+                r.sc = enc(ch.Scale.X, ch.Scale.Y, ch.Scale.Z)
+                r.of = enc(ch.Offset.X, ch.Offset.Y, ch.Offset.Z)
+            elseif ch:IsA('Light') then
+                r.b = ch.Brightness; r.col = enc(ch.Color.R, ch.Color.G, ch.Color.B)
+                r.sh = ch.Shadows; r.e = ch.Enabled; r.rg = get(ch, 'Range')
+                r.a = get(ch, 'Angle'); local f = get(ch, 'Face'); r.f = f and f.Name
+            else
+                return nil
+            end
+            return r
+        end
+
+        local function partRec(p, root, ref)
+            local c = p.Color
+            local r = {
+                c = p.ClassName, n = p.Name,
+                cf = enc(ref:ToObjectSpace(p.CFrame):GetComponents()),
+                s = enc(p.Size.X, p.Size.Y, p.Size.Z),
+                col = enc(c.R, c.G, c.B),
+                m = p.Material.Name, mv = get(p, 'MaterialVariant'),
+                t = p.Transparency, r = p.Reflectance, cs = p.CastShadow,
+            }
+            local partner = partnerOf(p)
+            local path = partner and root and pathIn(root, partner)
+            if path then
+                r.rn = partner.Name; r.rp = path
+                r.rcf = enc(partner.CFrame:ToObjectSpace(p.CFrame):GetComponents())
+            end
+            if p:IsA('Part') then r.sh = p.Shape.Name end
+            if p:IsA('MeshPart') then
+                r.mid = get(p, 'MeshId'); r.tid = get(p, 'TextureID')
+                r.ds = get(p, 'DoubleSided')
+                local ms = meshSizeOf(p)
+                if ms then r.ms = enc(ms.X, ms.Y, ms.Z) end
+            end
+            if p:FindFirstChildOfClass('SurfaceAppearance') then r.sa = true end
+            local kids = {}
+            for _, ch in ipairs(p:GetChildren()) do
+                local cr = childRec(ch)
+                if cr then kids[#kids + 1] = cr end
+            end
+            if #kids > 0 then r.ch = kids end
+            return r
+        end
+
+        -- session clone: keeps unions/SurfaceAppearance that data alone can't rebuild
+        local function cleanClone(p, bare)
+            local wasArch = p.Archivable
+            pcall(function() p.Archivable = true end)
+            local ok, cl = pcall(function() return p:Clone() end)
+            pcall(function() p.Archivable = wasArch end)
+            if not ok or not cl then return nil end
+            for _, d in ipairs(cl:GetDescendants()) do
+                if bare or d:IsA('JointInstance') or d:IsA('WeldConstraint') or d:IsA('Constraint')
+                    or d:IsA('NoCollisionConstraint') or d:IsA('BodyMover')
+                    or d:IsA('LuaSourceContainer') or d:IsA('Sound') or d:IsA('BasePart')
+                    or d:IsA('Model') or d:IsA('ProximityPrompt') or d:IsA('ClickDetector') then
+                    pcall(function() d:Destroy() end)
+                end
+            end
+            return cl
+        end
+
+        ppI.copyParts = function(list)
+            if #list == 0 then showToast('No parts selected'); return end
+            local root = rootOf(list[1])
+            local ref = refFor(root)
+            local key = HS:GenerateGUID(false)
+            local recs, clones = {}, {}
+            for i, p in ipairs(list) do
+                recs[i] = partRec(p, root, ref)
+                clones[i] = cleanClone(p)
+            end
+            clipCache = { key = key, clones = clones }
+            local data = PREFIX .. HS:JSONEncode({ v = 1, k = key, parts = recs })
+            ppI.copyOut.Text = data
+            local copied = setClip and pcall(setClip, data)
+            showToast('Copied ' .. #list .. ' part(s)' .. (copied and ' to clipboard' or ' (clipboard unavailable, use the box)'))
+        end
+
+        local function newMeshPart(id)
+            local AS = game:GetService('AssetService')
+            local ok, mp = false, nil
+            if Content and Content.fromUri then
+                ok, mp = pcall(function() return AS:CreateMeshPartAsync(Content.fromUri(id)) end)
+            end
+            if not ok or typeof(mp) ~= 'Instance' then
+                ok, mp = pcall(function() return AS:CreateMeshPartAsync(id) end)
+            end
+            if ok and typeof(mp) == 'Instance' then return mp end
+        end
+
+        local function buildChild(r, parent)
+            local ok, ch = pcall(Instance.new, r.k)
+            if not ok then return end
+            if r.k == 'Decal' or r.k == 'Texture' then
+                set(ch, 'Texture', r.tx); set(ch, 'Face', r.f and Enum.NormalId[r.f])
+                set(ch, 'Transparency', r.t); set(ch, 'Color3', decC3(r.col)); set(ch, 'ZIndex', r.z)
+                local su = dec(r.su)
+                if #su == 4 then
+                    set(ch, 'StudsPerTileU', su[1]); set(ch, 'StudsPerTileV', su[2])
+                    set(ch, 'OffsetStudsU', su[3]); set(ch, 'OffsetStudsV', su[4])
+                end
+            elseif r.k == 'SpecialMesh' then
+                set(ch, 'MeshType', r.mt and Enum.MeshType[r.mt]); set(ch, 'MeshId', r.id)
+                set(ch, 'TextureId', r.tx); set(ch, 'Scale', decV3(r.sc))
+                set(ch, 'Offset', decV3(r.of)); set(ch, 'VertexColor', decV3(r.vc))
+            elseif ch:IsA('DataModelMesh') then
+                set(ch, 'Scale', decV3(r.sc)); set(ch, 'Offset', decV3(r.of))
+            elseif ch:IsA('Light') then
+                set(ch, 'Brightness', r.b); set(ch, 'Color', decC3(r.col)); set(ch, 'Shadows', r.sh)
+                set(ch, 'Enabled', r.e); set(ch, 'Range', r.rg); set(ch, 'Angle', r.a)
+                set(ch, 'Face', r.f and Enum.NormalId[r.f])
+            end
+            ch.Parent = parent
+        end
+
+        -- returns the part plus a note when something could not be rebuilt exactly
+        local function buildPart(r)
+            local size = decV3(r.s) or Vector3.one
+            local p, note
+            if r.c == 'MeshPart' and r.mid and r.mid ~= '' then
+                p = newMeshPart(r.mid)
+                if p then
+                    set(p, 'TextureID', r.tid); set(p, 'DoubleSided', r.ds)
+                else
+                    p = Instance.new('Part')
+                    local sm = Instance.new('SpecialMesh')
+                    sm.MeshType = Enum.MeshType.FileMesh
+                    set(sm, 'MeshId', r.mid); set(sm, 'TextureId', r.tid)
+                    local ms = decV3(r.ms)
+                    if ms and ms.X > 0 and ms.Y > 0 and ms.Z > 0 then
+                        sm.Scale = size / ms
+                        -- keep the Size gizmo scaling the mesh like a real MeshPart
+                        p:GetPropertyChangedSignal('Size'):Connect(function()
+                            sm.Scale = p.Size / ms
+                        end)
+                    else
+                        note = 'mesh scale guessed'
+                    end
+                    sm.Parent = p
+                end
+            elseif r.c == 'WedgePart' or r.c == 'CornerWedgePart' or r.c == 'Part' then
+                p = Instance.new(r.c)
+            else
+                p = Instance.new('Part'); note = r.c .. ' rebuilt as block'
+            end
+            if r.sa then note = 'SurfaceAppearance needs same-session paste' end
+            set(p, 'Shape', r.sh and Enum.PartType[r.sh])
+            p.Size = size
+            set(p, 'Color', decC3(r.col))
+            set(p, 'Material', r.m and Enum.Material[r.m])
+            if r.mv and r.mv ~= '' then set(p, 'MaterialVariant', r.mv) end
+            set(p, 'Transparency', r.t); set(p, 'Reflectance', r.r); set(p, 'CastShadow', r.cs)
+            p.Name = r.n or 'Pasted'
+            for _, cr in ipairs(r.ch or {}) do pcall(buildChild, cr, p) end
+            return p, note
+        end
+
+        -- weight goes through density (Roblox clamps it to 0.0001..100)
+        local function applyWeight(tw, w)
+            if w <= 0 then tw.Massless = true; return 0 end
+            tw.Massless = false
+            local base = PhysicalProperties.new(tw.Material)
+            tw.CustomPhysicalProperties = PhysicalProperties.new(1, base.Friction, base.Elasticity,
+                base.FrictionWeight, base.ElasticityWeight)
+            local vol = tw:GetMass()
+            local d = math.clamp(w / math.max(vol, 1e-6), 0.0001, 100)
+            tw.CustomPhysicalProperties = PhysicalProperties.new(d, base.Friction, base.Elasticity,
+                base.FrictionWeight, base.ElasticityWeight)
+            return tw:GetMass()
+        end
+
+        -- the visible part stays an anchored follower (gizmo-safe); collision and
+        -- mass live on an invisible twin welded to the anchor, synced from edits
+        local function applyPhys(part)
+            local e = pasted[part]
+            if not e then return 0 end
+            if not e.collide and e.weight <= 0 then
+                if e.twin then pcall(function() e.twin:Destroy() end) end
+                e.twin, e.weld = nil, nil
+                return 0
+            end
+            if not e.twin or not e.twin.Parent then
+                local tw = cleanClone(part, true)
+                if not tw then return 0 end
+                tw.Name = part.Name .. '__Phys'
+                tw:SetAttribute('KPastePhys', true)
+                tw.Anchored = false; tw.Transparency = 1; tw.CastShadow = false
+                set(tw, 'CanQuery', false); set(tw, 'CanTouch', false)
+                tw.CFrame = e.anchor.CFrame * e.offset
+                local w = Instance.new('Weld')
+                w.Part0 = e.anchor; w.Part1 = tw; w.C0 = e.offset; w.Parent = tw
+                tw.Parent = part
+                e.twin, e.weld, e.twinOff, e.twinSize = tw, w, e.offset, part.Size
+            end
+            e.twin.CanCollide = e.collide
+            return applyWeight(e.twin, e.weight)
+        end
+
+        -- an outside CFrame write (gizmo, Apply, undo) is folded into the offset
+        local function ensureFollow()
+            if followConn then return end
+            followConn = RunService.RenderStepped:Connect(function()
+                for part, e in pairs(pasted) do
+                    local a = e.anchor
+                    if part.Parent and a and a.Parent then
+                        if e.last and not part.CFrame:FuzzyEq(e.last, 1e-4) then
+                            e.offset = e.lastAnchor:ToObjectSpace(part.CFrame)
+                        end
+                        part.CFrame = a.CFrame * e.offset
+                        e.last = part.CFrame; e.lastAnchor = a.CFrame
+                        if e.twin and e.twin.Parent then
+                            if e.twinOff ~= e.offset then e.weld.C0 = e.offset; e.twinOff = e.offset end
+                            if e.twinSize ~= part.Size then
+                                e.twin.Size = part.Size; e.twinSize = part.Size
+                                applyWeight(e.twin, e.weight)
+                            end
+                        end
+                        -- drive the Visual Only ghost here too so it never lags a frame
+                        local ve = ppVisualCache[part]
+                        if ve and ve.ghost and ve.ghost.Parent then
+                            ve.ghost.CFrame = (part.CFrame + ve.posDelta) * ve.rotOffset
+                        end
+                    end
+                end
+            end)
+        end
+
+        local function resolveAnchor(a)
+            while a and pasted[a] and pasted[a].anchor do a = pasted[a].anchor end
+            return a
+        end
+
+        local function finalize(p, anchor, worldCF)
+            p.Anchored = true; p.CanCollide = false; p.CanTouch = false
+            set(p, 'CanQuery', true); set(p, 'Massless', true)
+            p.CFrame = worldCF
+            pasted[p] = { anchor = anchor, offset = anchor.CFrame:ToObjectSpace(worldCF),
+                          last = p.CFrame, lastAnchor = anchor.CFrame,
+                          collide = pasteState.collide, weight = pasteState.weight }
+        end
+
+        -- same path first, then a unique non-generic name anywhere in the vehicle
+        local function findPartner(root, folder, r)
+            if type(r.rp) == 'table' then
+                local cur = root
+                for _, nm in ipairs(r.rp) do
+                    cur = cur and cur:FindFirstChild(nm)
+                end
+                if cur and cur:IsA('BasePart') then return cur end
+            end
+            if type(r.rn) ~= 'string' or GENERIC[r.rn] then return nil end
+            local hit
+            for _, d in ipairs(root:GetDescendants()) do
+                if d.Name == r.rn and d:IsA('BasePart') and not d:IsDescendantOf(folder) then
+                    if hit then return nil end
+                    hit = d
+                end
+            end
+            return hit
+        end
+
+        ppI.pasteBtn.MouseButton1Click:Connect(function()
+            local raw = ppI.pasteIn.Text or ''
+            local json = raw:match('{.*}')
+            local ok, data = pcall(function() return HS:JSONDecode(json or '') end)
+            if not ok or type(data) ~= 'table' or type(data.parts) ~= 'table' then
+                showToast('Paste box has no valid part data'); return
+            end
+            local root, seat = ppGetRootModel(), ownSeat()
+            if not root or not seat then showToast('Sit on a vehicle first'); return end
+
+            local folder = root:FindFirstChild('KonstantPasted')
+            if not folder then
+                folder = Instance.new('Folder'); folder.Name = 'KonstantPasted'; folder.Parent = root
+            end
+
+            -- unmatched parts follow the first selected part (or the seat)
+            local fallback = seat
+            for _, p in ipairs(ppSelectedBaseParts()) do fallback = p; break end
+            fallback = resolveAnchor(fallback)
+
+            -- pass 1: partner matches place exactly; the rest keep their layout
+            -- around the vehicle's bounding-box center
+            local plan, loose, sum = {}, {}, Vector3.zero
+            for i, r in ipairs(data.parts) do
+                local partner = findPartner(root, folder, r)
+                local rcf = decCF(r.rcf)
+                if partner and rcf then
+                    plan[i] = { anchor = resolveAnchor(partner), cf = partner.CFrame * rcf }
+                else
+                    local rel = decCF(r.cf) or CFrame.new()
+                    loose[#loose + 1] = { i = i, rel = rel }
+                    sum += rel.Position
+                end
+            end
+            if #loose > 0 then
+                local centroid = sum / #loose
+                local bb = root:GetBoundingBox()
+                local center = CFrame.new(bb.Position) * seat.CFrame.Rotation
+                for _, l in ipairs(loose) do
+                    plan[l.i] = { anchor = fallback,
+                                  cf = center * CFrame.new(-centroid) * l.rel, loose = true }
+                end
+            end
+
+            local useCache = clipCache and clipCache.key == data.k
+            local made, notes, nLoose = {}, {}, 0
+            for i, r in ipairs(data.parts) do
+                local pl = plan[i]
+                local src = useCache and clipCache.clones[i]
+                local p, note
+                if src then p = src:Clone() else p, note = buildPart(r) end
+                if p and pl then
+                    if note then notes[note] = true end
+                    if pl.loose then nLoose += 1 end
+                    finalize(p, pl.anchor, pl.cf)
+                    p.Parent = folder
+                    applyPhys(p)
+                    made[#made + 1] = p
+                end
+            end
+            if #made == 0 then showToast('Nothing pasted'); return end
+            ensureFollow()
+
+            History.push('Paste ' .. #made .. ' part(s)',
+                function() for _, p in ipairs(made) do pcall(function() p.Parent = folder end) end end,
+                function() for _, p in ipairs(made) do pcall(function() p.Parent = nil end) end end)
+
+            -- rebuild now and select what was pasted so the gizmos grab it
+            pcall(ppBuildTree, true)
+            local want = {}
+            for _, p in ipairs(made) do want[p] = true end
+            ppDeselectAll()
+            local firstNode
+            for _, n in ipairs(ppNodeList) do
+                if want[n.instance] then
+                    ppSetSel(n, true); firstNode = firstNode or n
+                end
+            end
+            if firstNode then ppExpandToAndFocus(firstNode) end
+
+            local msg = 'Pasted ' .. #made .. (useCache and ' (exact clone)' or '')
+            if nLoose > 0 then msg = msg .. ', ' .. nLoose .. ' unmatched -> vehicle center' end
+            local extra = {}
+            for k in pairs(notes) do extra[#extra + 1] = k end
+            if #extra > 0 then msg = msg .. ' - ' .. table.concat(extra, ', ') end
+            showToast(msg)
+        end)
+
+        local function selectedPasted()
+            local out = {}
+            for _, p in ipairs(ppSelectedBaseParts()) do
+                if pasted[p] then out[#out + 1] = p end
+            end
+            return out
+        end
+
+        ppI.syncPasteUI = function(first)
+            local e = first and pasted[first]
+            ppI.setTog(ppI.pasteCollTog, e and e.collide or (not e and pasteState.collide))
+            ppI.pasteWeightIn.Text = tostring(e and e.weight or pasteState.weight)
+        end
+
+        ppI.pasteCollTog.MouseButton1Click:Connect(function()
+            local on = ppI.pasteCollTog.Text == 'OFF'
+            ppI.setTog(ppI.pasteCollTog, on)
+            pasteState.collide = on
+            local list = selectedPasted()
+            for _, p in ipairs(list) do pasted[p].collide = on; applyPhys(p) end
+            showToast('Collide ' .. (on and 'ON' or 'OFF')
+                .. (#list > 0 and (' (' .. #list .. ' pasted)') or ' for new pastes'))
+        end)
+
+        ppI.pasteWeightBtn.MouseButton1Click:Connect(function()
+            local w = math.max(0, tonumber(ppI.pasteWeightIn.Text) or 0)
+            ppI.pasteWeightIn.Text = tostring(w)
+            pasteState.weight = w
+            local list = selectedPasted()
+            local total = 0
+            for _, p in ipairs(list) do pasted[p].weight = w; total += applyPhys(p) end
+            if #list == 0 then
+                showToast('Weight ' .. w .. ' for new pastes')
+            elseif w <= 0 then
+                showToast('Massless (' .. #list .. ' pasted)')
+            else
+                showToast(string.format('Weight set: %.3f total mass (%d pasted)', total, #list))
+            end
+        end)
+
+        ppI.copyBtn.MouseButton1Click:Connect(function()
+            ppI.copyParts(ppSelectedBaseParts())
+        end)
+        ppI.clearCpBtn.MouseButton1Click:Connect(function()
+            ppI.copyOut.Text = ''; ppI.pasteIn.Text = ''
+        end)
+        ppI.pasteDelBtn.MouseButton1Click:Connect(function()
+            local n = 0
+            for part in pairs(pasted) do
+                pcall(function() part:Destroy() end)
+                pasted[part] = nil; n += 1
+            end
+            local root = ppGetRootModel()
+            local folder = root and root:FindFirstChild('KonstantPasted')
+            if folder then pcall(function() folder:Destroy() end) end
+            showToast('Deleted ' .. n .. ' pasted part(s)')
+        end)
+    end
 
     -- initial render (empty selection)
     ppRefreshInspector()
