@@ -3993,7 +3993,7 @@ do
             local deltas = _G.ppDeltas or {}
             local parts = {}
             for _, p in ipairs(model:GetDescendants()) do
-                if p:IsA('BasePart') then
+                if p:IsA('BasePart') and not p:FindFirstAncestor('KonstantPasted') then
                     local key = (p.Parent and p.Parent.Name or '') .. '/' .. p.Name
                     pcall(function()
                         -- per-decal snapshot (children Decals/Textures)
@@ -4023,6 +4023,10 @@ do
                         local hasDelta = (dP and dP.Magnitude > 1e-6)
                                       or (dR and dR.Magnitude > 1e-6)
                                       or (dS and dS.Magnitude > 1e-6)
+                        -- gizmo/Apply edits: one part-local CFrame, replaces dPos/dRot/dSize
+                        local dCF, dSz
+                        if _G.KPP then dCF, dSz = _G.KPP.editOf(p) end
+                        if dCF or dSz then hasDelta = false end
                         parts[key] = {
                             Color        = p.Color,
                             Material     = p.Material,
@@ -4036,6 +4040,8 @@ do
                             dPos         = hasDelta and (dP or zeroVec) or nil,
                             dRot         = hasDelta and (dR or zeroVec) or nil,
                             dSize        = hasDelta and (dS or zeroVec) or nil,
+                            dCF          = dCF,
+                            dSz          = dSz,
                         }
                     end)
                 end
@@ -4056,7 +4062,8 @@ do
             -- absolute CFrameRel/Size). v2 files still load, they just skip
             -- the pos/rot/size restore because the old absolute form would
             -- break a bike with different geometry.
-            cfgTable[name] = { _v = 3, parts = parts, effects = effects }
+            cfgTable[name] = { _v = 3, parts = parts, effects = effects,
+                               custom = _G.KPP and _G.KPP.saveCustom(model) or nil }
             cfgFlushToDisk(cfgTable)
             cfgSelName = name
             cfgUpdateHeaderLabel()
@@ -4112,15 +4119,22 @@ do
                             if d.Anchored   ~= nil then p.Anchored   = d.Anchored   end
                             if d.CanCollide ~= nil then p.CanCollide = d.CanCollide end
                             if applyTransforms then
+                                local K = _G.KPP
+                                local place = K and K.placePart or function(q, cf) q.CFrame = cf end
+                                if d.dCF or d.dSz then
+                                    if K then K.markEdit(p, true) end
+                                    if d.dSz then p.Size = p.Size + d.dSz end
+                                    if d.dCF then place(p, p.CFrame * d.dCF) end
+                                end
                                 -- v3+: add the stored deltas to the current state
                                 if d.dPos and d.dPos.Magnitude > 1e-6 then
-                                    p.CFrame = p.CFrame + d.dPos
+                                    place(p, p.CFrame + d.dPos)
                                 end
                                 if d.dRot and d.dRot.Magnitude > 1e-6 then
-                                    p.CFrame = p.CFrame * CFrame.fromOrientation(
+                                    place(p, p.CFrame * CFrame.fromOrientation(
                                         math.rad(d.dRot.X),
                                         math.rad(d.dRot.Y),
-                                        math.rad(d.dRot.Z))
+                                        math.rad(d.dRot.Z)))
                                 end
                                 if d.dSize and d.dSize.Magnitude > 1e-6 then
                                     p.Size = Vector3.new(
@@ -4173,6 +4187,7 @@ do
                     end
                 end
             end
+            if _G.KPP then pcall(_G.KPP.loadCustom, model, data.custom) end
             -- restore whole-bike effects (headlight, rainbow)
             if effects then
                 if effects.headlight then
@@ -4413,6 +4428,28 @@ do
                               -- Visual Only is on. Hoisted so the gizmo
                               -- wire fns (lexically higher) can see it.
     local ppShowContextMenu   -- right-click popup: {Delete}. Assigned below.
+    -- Visual Only: the blue selection box rides the ghost, a green box marks the real part
+    ppI.realBoxes = {}
+    ppI.syncVisBox = function(inst)
+        local sb, e, rb = ppSelBoxes[inst], ppVisualCache[inst], ppI.realBoxes[inst]
+        local g = e and e.ghost and e.ghost.Parent and e.ghost
+        if sb then pcall(function() sb.Adornee = g or inst end) end
+        if sb and g then
+            if not rb then
+                rb = Instance.new('SelectionBox')
+                rb.Adornee = inst; rb.Color3 = Color3.fromRGB(80, 220, 110)
+                rb.LineThickness = 0.04; rb.SurfaceTransparency = 1; rb.Parent = workspace
+                ppI.realBoxes[inst] = rb
+            end
+        elseif rb then
+            pcall(function() rb:Destroy() end)
+            ppI.realBoxes[inst] = nil
+        end
+    end
+    ppI.syncAllVisBoxes = function()
+        for inst in pairs(ppI.realBoxes) do ppI.syncVisBox(inst) end
+        for inst in pairs(ppSelBoxes) do ppI.syncVisBox(inst) end
+    end
 
     local pp = Instance.new('ScreenGui')
     pp.Name           = 'PartPickerGui'
@@ -4966,6 +5003,10 @@ do
     ppI.gizmoMoveBtn = ppRBtn('Move', 56,  _y, 62)
     ppI.gizmoRotBtn  = ppRBtn('Rot',  122, _y, 62)
     ppI.gizmoSizeBtn = ppRBtn('Size', 188, _y, 62)
+    -- gizmo snap increments; 0 or blank = free drag
+    _y = ppRow(28); ppRLbl('Step', 12, _y + 3, 40)
+    ppI.gzStepIn = ppRInp('0', 56, _y, 50); ppRLbl('studs', 110, _y + 3, 36)
+    ppI.gzRotIn  = ppRInp('0', 150, _y, 50); ppRLbl('deg', 204, _y + 3, 30)
 
     -- ============ SECTION: PHYSICS ============
     ppSect('PHYSICS')
@@ -5033,10 +5074,15 @@ do
         _y = ppRow(28); ppRLbl('Weight', 12, _y + 3, 90)
         ppI.pasteWeightIn  = ppRInp('0', 108, _y, 58)
         ppI.pasteWeightBtn = ppRBtn('Set', 172, _y, 84)
-        _y = ppRow(58)
-        local hint = ppRLbl('Copy saves to a file, so Paste works on big builds even if the box cuts off. Collide/Weight apply to selected pasted parts + new pastes. Weight 0 = massless.',
+        _y = ppRow(28)
+        ppI.anchorLbl = ppRLbl('Anchor: none', 12, _y + 3, 110)
+        ppI.anchorLbl.TextTruncate = Enum.TextTruncate.AtEnd
+        ppI.anchorBtn  = ppRBtn('Anchor to Sel', 126, _y, 94)
+        ppI.anchorXBtn = ppRBtn('X', 224, _y, 32)
+        _y = ppRow(84)
+        local hint = ppRLbl('Copy saves to a file, so Paste works on big builds even if the box cuts off. Collide/Weight apply to selected pasted parts + new pastes. Weight 0 = massless. Anchor: right-click a part > Anchor to object..., select what it should follow, click Anchor to Sel.',
             12, _y, 244, SUBTEXT)
-        hint.Size = UDim2.new(0, 244, 0, 54); hint.TextWrapped = true; hint.TextSize = 10
+        hint.Size = UDim2.new(0, 244, 0, 80); hint.TextWrapped = true; hint.TextSize = 10
     end
 
     -- mouse-select ignore list: name patterns + explicit parts + invisible
@@ -5066,6 +5112,8 @@ do
             pcall(function() activeGizmo:Destroy() end)
             activeGizmo = nil
         end
+        ppI.gzPart, ppI.gzAdornee, ppI.gzMode = nil, nil, nil
+        ppI.gizmoHover, ppI.gizmoDrag = false, false
     end
 
     -- "primary" = first BasePart under the selection (descending Models/Folders)
@@ -5080,152 +5128,188 @@ do
         end
     end
 
-    -- one history entry per drag (Up), not per MouseDrag frame
-    local function pushGizmoUndo(label, part, before, after)
-        History.push(label,
-            function() if part.Parent then
-                for k, v in pairs(after) do pcall(function() part[k] = v end) end
-            end end,
-            function() if part.Parent then
-                for k, v in pairs(before) do pcall(function() part[k] = v end) end
-            end end)
+    -- move ONE part: a CFrame write drags its whole welded assembly, so
+    -- retarget its joints instead (Motor6D: P1 = P0 * C0 * Transform * C1:Inverse())
+    ppI.placePart = function(part, cf)
+        local wcs, moved, snap = {}, false, {}
+        -- neighbours shift as soon as one joint changes, so read them all first
+        local joints = part:GetJoints()
+        for _, j in ipairs(joints) do
+            if j:IsA('JointInstance') and j.Part0 and j.Part1 then
+                snap[j] = ((j.Part1 == part) and j.Part0 or j.Part1).CFrame
+            end
+        end
+        for _, j in ipairs(joints) do
+            if j:IsA('WeldConstraint') then
+                if j.Enabled then j.Enabled = false; wcs[#wcs + 1] = j end
+            elseif snap[j] then
+                local t = j:IsA('Motor6D') and j.Transform or CFrame.identity
+                if j.Part1 == part then
+                    j.C0 = snap[j]:Inverse() * cf * j.C1 * t:Inverse(); moved = true
+                elseif j.Part0 == part then
+                    j.C1 = snap[j]:Inverse() * cf * j.C0 * t; moved = true
+                end
+            elseif j:IsA('RigidConstraint') and j.Attachment0 and j.Attachment1 then
+                local mine = (j.Attachment0.Parent == part) and j.Attachment0 or j.Attachment1
+                local other = (mine == j.Attachment0) and j.Attachment1 or j.Attachment0
+                mine.CFrame = cf:Inverse() * other.WorldCFrame; moved = true
+            end
+        end
+        if not moved then part.CFrame = cf end
+        for _, j in ipairs(wcs) do j.Enabled = true end
     end
 
-    -- Drag-start snapshots for visual-only mode so we don't accumulate
-    -- deltas across drags (a fresh Down resets the baseline).
-    local dragStartPosDelta, dragStartRotOffset, dragStartSizeOver
+    -- one history entry per drag (Up), not per MouseDrag frame
+    local function pushGizmoUndo(label, part, before, after)
+        local function put(vals)
+            if not part.Parent then return end
+            if vals.Size then pcall(function() part.Size = vals.Size end) end
+            if vals.CFrame then pcall(ppI.placePart, part, vals.CFrame) end
+        end
+        History.push(label, function() put(after) end, function() put(before) end)
+    end
+
+    -- Visual Only drags edit the ghost entry, never the real part
+    ppI.visSnap = function(e)
+        return { posDelta = e.posDelta, rotOffset = e.rotOffset, sizeOverride = e.sizeOverride }
+    end
+    ppI.pushVisUndo = function(label, part, before)
+        local e = ppVisualCache[part]
+        if not e then return end
+        local after = ppI.visSnap(e)
+        if after.posDelta == before.posDelta and after.rotOffset == before.rotOffset
+            and after.sizeOverride == before.sizeOverride then return end
+        local function put(v)
+            local cur = ppVisualCache[part]
+            if cur then
+                cur.posDelta, cur.rotOffset, cur.sizeOverride = v.posDelta, v.rotOffset, v.sizeOverride
+                if not v.sizeOverride and cur.ghost then pcall(function() cur.ghost.Size = part.Size end) end
+            end
+        end
+        History.push(label, function() put(after) end, function() put(before) end)
+    end
+
+    -- baseline taken on Down so deltas never stack across frames; dragCF is
+    -- the ghost's frame in Visual Only so handle axes match what you see
+    local visStart
+    ppI.snapStep = function(v, box, toRad)
+        local inc = tonumber(box and box.Text) or 0
+        if inc <= 0 then return v end
+        if toRad then inc = math.rad(inc) end
+        return math.floor(v / inc + 0.5) * inc
+    end
+    local function dragBegin(part)
+        ppI.gizmoDrag = true
+        local e = ppVisualCache[part]
+        visStart = e and ppI.visSnap(e) or nil
+        if not visStart and ppI.markEdit then ppI.markEdit(part) end
+        dragCF = (e and e.ghost and e.ghost.Parent) and e.ghost.CFrame or part.CFrame
+        dragSize = (e and e.sizeOverride) or part.Size
+    end
+    local function dragEnd(label, part)
+        ppI.gizmoDrag = false
+        if not dragCF then return end
+        if visStart then
+            ppI.pushVisUndo('Visual ' .. label, part, visStart)
+        elseif dragCF ~= part.CFrame or dragSize ~= part.Size then
+            pushGizmoUndo('Gizmo ' .. label, part,
+                { CFrame = dragCF, Size = dragSize }, { CFrame = part.CFrame, Size = part.Size })
+        end
+        dragCF = nil; dragSize = nil; visStart = nil
+    end
 
     local function wireMove(part, h)
-        h.MouseButton1Down:Connect(function()
-            dragCF = part.CFrame
-            local e = ppVisualCache[part]
-            if e then dragStartPosDelta = e.posDelta end
-        end)
-        h.MouseButton1Up:Connect(function()
-            if dragCF and dragCF ~= part.CFrame then
-                pushGizmoUndo('Gizmo move', part, { CFrame = dragCF }, { CFrame = part.CFrame })
-            end
-            dragCF = nil; dragStartPosDelta = nil
-        end)
+        h.MouseButton1Down:Connect(function() dragBegin(part) end)
+        h.MouseButton1Up:Connect(function() dragEnd('move', part) end)
         h.MouseDrag:Connect(function(face, distance)
             if not dragCF then return end
-            local axis  = Vector3.FromNormalId(face)
-            local wDlta = dragCF:VectorToWorldSpace(axis * distance)
+            distance = ppI.snapStep(distance, ppI.gzStepIn)
+            local wDlta = dragCF:VectorToWorldSpace(Vector3.FromNormalId(face) * distance)
             local e = ppVisualCache[part]
-            if e then
-                -- ghost-mode: update posDelta, real part untouched
-                e.posDelta = (dragStartPosDelta or Vector3.new()) + wDlta
+            if e and visStart then
+                e.posDelta = visStart.posDelta + part.CFrame:VectorToObjectSpace(wDlta)
             else
-                part.CFrame = dragCF + wDlta
+                ppI.placePart(part, dragCF + wDlta)
             end
             if ppRefreshInspector then ppRefreshInspector() end
         end)
     end
     local function wireRot(part, h)
-        h.MouseButton1Down:Connect(function()
-            dragCF = part.CFrame
-            local e = ppVisualCache[part]
-            if e then dragStartRotOffset = e.rotOffset end
-        end)
-        h.MouseButton1Up:Connect(function()
-            if dragCF and dragCF ~= part.CFrame then
-                pushGizmoUndo('Gizmo rotate', part, { CFrame = dragCF }, { CFrame = part.CFrame })
-            end
-            dragCF = nil; dragStartRotOffset = nil
-        end)
+        h.MouseButton1Down:Connect(function() dragBegin(part) end)
+        h.MouseButton1Up:Connect(function() dragEnd('rotate', part) end)
         h.MouseDrag:Connect(function(axis, angle)
             if not dragCF then return end
+            angle = ppI.snapStep(angle, ppI.gzRotIn, true)
             local rotCF
             if     axis == Enum.Axis.X then rotCF = CFrame.Angles(angle, 0, 0)
             elseif axis == Enum.Axis.Y then rotCF = CFrame.Angles(0, angle, 0)
             else                            rotCF = CFrame.Angles(0, 0, angle) end
             local e = ppVisualCache[part]
-            if e then
-                e.rotOffset = (dragStartRotOffset or CFrame.new()) * rotCF
+            if e and visStart then
+                e.rotOffset = visStart.rotOffset * rotCF
             else
                 -- right-multiply: rotates around the part's own local axis
-                part.CFrame = dragCF * rotCF
+                ppI.placePart(part, dragCF * rotCF)
             end
             if ppRefreshInspector then ppRefreshInspector() end
         end)
     end
     -- grows Size along face axis; shifts CFrame by half-delta to pin opposite face
     local function wireSize(part, h)
-        h.MouseButton1Down:Connect(function()
-            dragCF   = part.CFrame
-            dragSize = part.Size
-            local e = ppVisualCache[part]
-            if e then dragStartSizeOver = e.sizeOverride or part.Size end
-        end)
-        h.MouseButton1Up:Connect(function()
-            if dragCF and (dragCF ~= part.CFrame or dragSize ~= part.Size) then
-                pushGizmoUndo('Gizmo resize', part,
-                    { CFrame = dragCF, Size = dragSize },
-                    { CFrame = part.CFrame, Size = part.Size })
-            end
-            dragCF = nil; dragSize = nil; dragStartSizeOver = nil
-        end)
+        h.MouseButton1Down:Connect(function() dragBegin(part) end)
+        h.MouseButton1Up:Connect(function() dragEnd('resize', part) end)
         h.MouseDrag:Connect(function(face, distance)
             if not dragSize then return end
+            distance = ppI.snapStep(distance, ppI.gzStepIn)
             local axisVec = Vector3.FromNormalId(face)
-            local absAxis = Vector3.new(math.abs(axisVec.X),
-                                        math.abs(axisVec.Y),
-                                        math.abs(axisVec.Z))
-            local newSize = (dragStartSizeOver or dragSize) + absAxis * distance
-            newSize = Vector3.new(math.max(0.05, newSize.X),
-                                  math.max(0.05, newSize.Y),
-                                  math.max(0.05, newSize.Z))
+            local absAxis = Vector3.new(math.abs(axisVec.X), math.abs(axisVec.Y), math.abs(axisVec.Z))
+            local newSize = dragSize + absAxis * distance
+            newSize = Vector3.new(math.max(0.05, newSize.X), math.max(0.05, newSize.Y), math.max(0.05, newSize.Z))
+            local shift = dragCF:VectorToWorldSpace(axisVec * (distance * 0.5))
             local e = ppVisualCache[part]
-            if e then
+            if e and visStart then
                 e.sizeOverride = newSize
-                -- ghost carries the visual size + centered pivot shift via
-                -- posDelta so the "grow along axis" behaviour still holds
-                e.posDelta = (dragStartPosDelta or e.posDelta or Vector3.new())
-                             + dragCF:VectorToWorldSpace(axisVec * (distance * 0.5))
+                e.posDelta = visStart.posDelta + part.CFrame:VectorToObjectSpace(shift)
             else
-                part.Size   = newSize
-                part.CFrame = dragCF + dragCF:VectorToWorldSpace(axisVec * (distance * 0.5))
+                part.Size = newSize
+                ppI.placePart(part, dragCF + shift)
             end
             if ppRefreshInspector then ppRefreshInspector() end
         end)
     end
 
+    -- the inspector refresh calls this every drag frame, so keep the live
+    -- gizmo when nothing changed (rebuilding it mid-drag killed the drag)
     local function attachGizmos()
+        local part = gizmoMode and firstSelBP()
+        local ghostEntry = part and ppVisualCache[part]
+        local adornee = (ghostEntry and ghostEntry.ghost) or part
+        if activeGizmo and activeGizmo.Parent and ppI.gzPart == part
+            and ppI.gzAdornee == adornee and ppI.gzMode == gizmoMode then return end
         destroyGizmos()
-        if not gizmoMode then return end
-        local part = firstSelBP()
         if not part then return end
 
-        -- Visual-only: adorn the gizmo to the GHOST so it visually
-        -- follows the offset location. wireXxx still gets the real part
-        -- for the ghost-cache lookup.
-        local ghostEntry = ppVisualCache[part]
-        local adornee    = (ghostEntry and ghostEntry.ghost) or part
-
-        if gizmoMode == 'move' then
-            local h = Instance.new('Handles')
-            h.Style   = Enum.HandlesStyle.Movement
-            h.Color3  = Color3.fromRGB(255, 200, 60)
-            h.Adornee = adornee
-            safeParentGui(h)
-            activeGizmo = h
-            wireMove(part, h)
-        elseif gizmoMode == 'rot' then
-            local h = Instance.new('ArcHandles')
-            h.Color3  = Color3.fromRGB(255,  80,  80)
-            h.Adornee = adornee
-            safeParentGui(h)
-            activeGizmo = h
-            wireRot(part, h)
-        else -- 'size'
-            local h = Instance.new('Handles')
-            h.Style   = Enum.HandlesStyle.Resize
-            h.Color3  = Color3.fromRGB(100, 220, 100)
-            h.Adornee = adornee
-            safeParentGui(h)
-            activeGizmo = h
-            wireSize(part, h)
+        local h
+        if gizmoMode == 'rot' then
+            h = Instance.new('ArcHandles')
+            h.Color3 = Color3.fromRGB(255, 80, 80)
+        else
+            h = Instance.new('Handles')
+            h.Style  = (gizmoMode == 'move') and Enum.HandlesStyle.Movement or Enum.HandlesStyle.Resize
+            h.Color3 = (gizmoMode == 'move') and Color3.fromRGB(255, 200, 60) or Color3.fromRGB(100, 220, 100)
         end
+        h.Adornee = adornee
+        -- Handles only fire input events under PlayerGui or CoreGui (gethui renders but stays dead)
+        local pg = plr and plr:FindFirstChildOfClass('PlayerGui')
+        if not (pg and pcall(function() h.Parent = pg end)) then pcall(function() h.Parent = CoreGui end) end
+        activeGizmo = h
+        ppI.gzPart, ppI.gzAdornee, ppI.gzMode = part, adornee, gizmoMode
+        -- lets Mouse Selection ignore clicks aimed at the handles
+        h.MouseEnter:Connect(function() ppI.gizmoHover = true end)
+        h.MouseLeave:Connect(function() ppI.gizmoHover = false end)
+        if gizmoMode == 'move' then wireMove(part, h)
+        elseif gizmoMode == 'rot' then wireRot(part, h)
+        else wireSize(part, h) end
     end
 
     -- keep the radio-button visuals in sync with gizmoMode
@@ -5323,6 +5407,7 @@ do
         for k, sb in pairs(ppSelBoxes) do
             pcall(function() sb:Destroy() end); ppSelBoxes[k] = nil
         end
+        for inst in pairs(ppI.realBoxes) do ppI.syncVisBox(inst) end
         ppSelCount = 0
         ppUpdateCount()
     end
@@ -5351,6 +5436,7 @@ do
                 ppSelBoxes[n.instance] = nil
             end
         end
+        ppI.syncVisBox(n.instance)
         ppUpdateCount()
     end
 
@@ -5429,6 +5515,7 @@ do
         classLbl.TextXAlignment = Enum.TextXAlignment.Right
         classLbl.TextTruncate = Enum.TextTruncate.AtEnd
         classLbl.ZIndex = 13; classLbl.Parent = row
+        n.classLbl = classLbl
 
         -- part name
         local nameLbl = Instance.new('TextLabel')
@@ -5563,6 +5650,7 @@ do
             end
         end)
 
+        if ppI.refreshTags then ppI.refreshTags() end
         if not silent then showToast('Tree: ' .. #ppNodeList .. ' nodes') end
     end
 
@@ -6242,11 +6330,14 @@ do
         ppMouseConn = UIS.InputBegan:Connect(function(input, gameProcessed)
             if not ppMouseSelOn then return end
             if gameProcessed then return end   -- click hit a UI element
+            if ppI.gizmoHover or ppI.gizmoDrag then return end -- click was on a gizmo handle
             local isL = input.UserInputType == Enum.UserInputType.MouseButton1
             local isR = input.UserInputType == Enum.UserInputType.MouseButton2
             if not (isL or isR) then return end
             if not mouse then return end
             local target = ppI.pickUnderMouse(mouse)
+            -- left-click on empty space clears the selection (and its gizmo)
+            if isL and not target and not ppCtrlDown() then ppDeselectAll(); return end
             if not target or not target:IsA('BasePart') or target:IsA('Terrain') then return end
             -- right-click: skip the tree flow, just pop the context menu
             if isR then
@@ -6315,7 +6406,7 @@ do
         ppCtxJustCreated = true
         task.defer(function() ppCtxJustCreated = false end)
         local menu = Instance.new('Frame')
-        menu.Size = UDim2.new(0, 160, 0, 120)
+        menu.Size = UDim2.new(0, 160, 0, 150)
         menu.Position = UDim2.new(0, x, 0, y)
         menu.BackgroundColor3 = BG2
         menu.BorderSizePixel = 1
@@ -6379,6 +6470,17 @@ do
             ppI.refreshIgnCount()
             showToast((ppI.ignored[inst] and 'Ignoring "' or 'Un-ignored "') .. inst.Name .. '"')
         end)
+        local pendingElse = ppI.anchorPending and ppI.anchorPendingInst ~= inst
+        ctxBtn(pendingElse and 'Anchor pending here' or 'Anchor to object...', 118, function()
+            if pendingElse then
+                local t = inst:IsA('BasePart') and inst
+                    or (inst:IsA('Model') and inst.PrimaryPart)
+                    or inst:FindFirstChildWhichIsA('BasePart', true)
+                if ppI.anchorTo then ppI.anchorTo(t) end
+            elseif ppI.setAnchorPending then
+                ppI.setAnchorPending(inst)
+            end
+        end)
     end
     -- dismiss on any click outside the menu
     UIS.InputBegan:Connect(function(input, gp)
@@ -6386,7 +6488,9 @@ do
         if ppCtxJustCreated then return end  -- ignore the event that opened us
         if input.UserInputType ~= Enum.UserInputType.MouseButton1
            and input.UserInputType ~= Enum.UserInputType.MouseButton2 then return end
+        -- GetMouseLocation counts the topbar inset, AbsolutePosition doesn't
         local mp = UIS:GetMouseLocation()
+        if not pp.IgnoreGuiInset then mp = mp - game:GetService('GuiService'):GetGuiInset() end
         local abs = ppCtxFrame.AbsolutePosition
         local sz  = ppCtxFrame.AbsoluteSize
         if mp.X < abs.X or mp.X > abs.X + sz.X or mp.Y < abs.Y or mp.Y > abs.Y + sz.Y then
@@ -6452,7 +6556,7 @@ do
             local n = 0
             for p, entry in pairs(ppVisualCache) do
                 if p and p.Parent then
-                    entry.posDelta = (entry.posDelta or Vector3.new()) + delta
+                    entry.posDelta = (entry.posDelta or Vector3.new()) + p.CFrame:VectorToObjectSpace(delta)
                     n = n + 1
                 end
             end
@@ -6461,7 +6565,8 @@ do
             return
         end
         local n = ppUndoable('Position +' .. tostring(delta), {'CFrame'}, function(p)
-            p.CFrame = p.CFrame + delta
+            if ppI.markEdit then ppI.markEdit(p) end
+            ppI.placePart(p, p.CFrame + delta)
             ppDeltaFor(p).pos = ppDeltaFor(p).pos + delta
         end)
         if n > 0 then showToast('Pos +' .. tostring(delta) .. ' (' .. n .. ')') end
@@ -6489,7 +6594,8 @@ do
         end
         local n = ppUndoable('Rotation +(' .. dx .. ',' .. dy .. ',' .. dz .. ')',
             {'CFrame'}, function(p)
-                p.CFrame = p.CFrame * rotCF
+                if ppI.markEdit then ppI.markEdit(p) end
+                ppI.placePart(p, p.CFrame * rotCF)
                 local d = ppDeltaFor(p).rot
                 ppDeltaFor(p).rot = Vector3.new(d.X + dx, d.Y + dy, d.Z + dz)
             end)
@@ -6521,6 +6627,7 @@ do
             return
         end
         local n = ppUndoable('Size +' .. tostring(delta), {'Size'}, function(p)
+            if ppI.markEdit then ppI.markEdit(p) end
             p.Size = Vector3.new(
                 math.max(0.05, p.Size.X + dx),
                 math.max(0.05, p.Size.Y + dy),
@@ -6600,56 +6707,68 @@ do
             end
             ppVisualCache[p] = nil
         end
+        ppI.syncAllVisBoxes()
+    end
+
+    -- ghost offsets are part-local so they turn and lean with the vehicle
+    ppI.visEnsureConn = function()
+        if ppVisualConn then return end
+        ppVisualConn = RunService.RenderStepped:Connect(function()
+            for p, entry in pairs(ppVisualCache) do
+                if p and p.Parent and entry.ghost and entry.ghost.Parent then
+                    entry.ghost.CFrame = p.CFrame * CFrame.new(entry.posDelta) * entry.rotOffset
+                    if entry.sizeOverride then entry.ghost.Size = entry.sizeOverride end
+                elseif entry.ghost then
+                    pcall(function() entry.ghost:Destroy() end)
+                    ppVisualCache[p] = nil
+                    ppI.syncVisBox(p)
+                end
+            end
+        end)
+    end
+
+    -- data (optional, from a config) = { pd = posDelta, ro = rotOffset, so = sizeOverride }
+    ppI.visAdd = function(p, data)
+        if ppVisualCache[p] ~= nil then return false end
+        local g = ppMakeGhost(p)
+        if not g then return false end
+        ppVisualCache[p] = {
+            ghost        = g,
+            posDelta     = (data and data.pd) or Vector3.zero,
+            rotOffset    = (data and data.ro) or CFrame.new(),
+            sizeOverride = data and data.so or nil,
+            origLTM      = p.LocalTransparencyModifier or 0,
+        }
+        -- hide the real part on THIS client only (server + other players still see it)
+        pcall(function() p.LocalTransparencyModifier = 1 end)
+        ppI.visEnsureConn()
+        ppI.syncVisBox(p)
+        ppI.setTog(ppI.visOnlyTog, true)
+        return true
+    end
+    ppI.visClear = function()
+        ppTearDownVisual()
+        ppI.setTog(ppI.visOnlyTog, false)
     end
 
     ppI.visOnlyTog.MouseButton1Click:Connect(function()
         local on = ppI.visOnlyTog.Text == 'OFF'
-        ppI.setTog(ppI.visOnlyTog, on)
         if on then
             local n = 0
             for _, p in ipairs(ppSelectedBaseParts()) do
-                if ppVisualCache[p] == nil then
-                    local g = ppMakeGhost(p)
-                    if g then
-                        ppVisualCache[p] = {
-                            ghost        = g,
-                            posDelta     = Vector3.new(0, 0, 0),
-                            rotOffset    = CFrame.new(),
-                            sizeOverride = nil,
-                            origLTM      = p.LocalTransparencyModifier or 0,
-                        }
-                        -- hide the real part on THIS client only (server + other
-                        -- players still see it normally, physics untouched)
-                        pcall(function() p.LocalTransparencyModifier = 1 end)
-                        n = n + 1
-                    end
-                end
+                if ppI.visAdd(p) then n = n + 1 end
             end
             if n == 0 then
                 ppI.setTog(ppI.visOnlyTog, false)
                 showToast('Visual Only: select parts first')
                 return
             end
-            if not ppVisualConn then
-                ppVisualConn = RunService.RenderStepped:Connect(function()
-                    for p, entry in pairs(ppVisualCache) do
-                        if p and p.Parent and entry.ghost and entry.ghost.Parent then
-                            entry.ghost.CFrame = (p.CFrame + entry.posDelta) * entry.rotOffset
-                            if entry.sizeOverride then
-                                entry.ghost.Size = entry.sizeOverride
-                            end
-                        elseif entry.ghost then
-                            pcall(function() entry.ghost:Destroy() end)
-                            ppVisualCache[p] = nil
-                        end
-                    end
-                end)
-            end
             showToast('Visual Only ON (' .. n .. ' ghost(s))')
         else
-            ppTearDownVisual()
+            ppI.visClear()
             showToast('Visual Only OFF')
         end
+        if ppI.attachGizmos then ppI.attachGizmos() end
     end)
 
     -- Decal Visible toggle: flip every existing Decal/Texture Transparency
@@ -7034,42 +7153,54 @@ do
                 tw:SetAttribute('KPastePhys', true)
                 tw.Anchored = false; tw.Transparency = 1; tw.CastShadow = false
                 E.set(tw, 'CanQuery', false); E.set(tw, 'CanTouch', false)
-                tw.CFrame = e.anchor.CFrame * e.offset
+                tw.CFrame = part.CFrame
+                local ra = E.resolveAnchor(e.anchor)
                 local w = Instance.new('Weld')
-                w.Part0 = e.anchor; w.Part1 = tw; w.C0 = e.offset; w.Parent = tw
+                w.Part0 = ra; w.Part1 = tw; w.C0 = ra.CFrame:ToObjectSpace(part.CFrame); w.Parent = tw
                 tw.Parent = part
-                e.twin, e.weld, e.twinOff, e.twinSize = tw, w, e.offset, part.Size
+                e.twin, e.weld, e.twinOff, e.twinSize = tw, w, w.C0, part.Size
             end
             e.twin.CanCollide = e.collide
             return E.applyWeight(e.twin, e.weight)
         end
 
         -- an outside CFrame write (gizmo, Apply, undo) is folded into the offset
+        -- an outside CFrame write (gizmo, Apply, undo) is folded into the offset;
+        -- anchors that are followers themselves go first so chains never lag a frame
+        function E.stepFollow(part, done)
+            if done[part] then return end
+            done[part] = true
+            local e = E.pasted[part]
+            local a = e and e.anchor
+            if not (a and part.Parent and a.Parent) then return end
+            if E.pasted[a] then E.stepFollow(a, done) end
+            if e.last and not part.CFrame:FuzzyEq(e.last, 1e-4) then
+                e.offset = e.lastAnchor:ToObjectSpace(part.CFrame)
+            end
+            part.CFrame = a.CFrame * e.offset
+            e.last = part.CFrame; e.lastAnchor = a.CFrame
+            if e.twin and e.twin.Parent and e.weld then
+                local ra = e.weld.Part0
+                local rel = (ra == a) and e.offset or (ra and ra.CFrame:ToObjectSpace(part.CFrame))
+                if rel and not (e.twinOff and e.twinOff:FuzzyEq(rel, 1e-4)) then
+                    e.weld.C0 = rel; e.twinOff = rel
+                end
+                if e.twinSize ~= part.Size then
+                    e.twin.Size = part.Size; e.twinSize = part.Size
+                    E.applyWeight(e.twin, e.weight)
+                end
+            end
+            -- drive the Visual Only ghost here too so it never lags a frame
+            local ve = ppVisualCache[part]
+            if ve and ve.ghost and ve.ghost.Parent then
+                ve.ghost.CFrame = part.CFrame * CFrame.new(ve.posDelta) * ve.rotOffset
+            end
+        end
         function E.ensureFollow()
             if E.followConn then return end
             E.followConn = RunService.RenderStepped:Connect(function()
-                for part, e in pairs(E.pasted) do
-                    local a = e.anchor
-                    if part.Parent and a and a.Parent then
-                        if e.last and not part.CFrame:FuzzyEq(e.last, 1e-4) then
-                            e.offset = e.lastAnchor:ToObjectSpace(part.CFrame)
-                        end
-                        part.CFrame = a.CFrame * e.offset
-                        e.last = part.CFrame; e.lastAnchor = a.CFrame
-                        if e.twin and e.twin.Parent then
-                            if e.twinOff ~= e.offset then e.weld.C0 = e.offset; e.twinOff = e.offset end
-                            if e.twinSize ~= part.Size then
-                                e.twin.Size = part.Size; e.twinSize = part.Size
-                                E.applyWeight(e.twin, e.weight)
-                            end
-                        end
-                        -- drive the Visual Only ghost here too so it never lags a frame
-                        local ve = ppVisualCache[part]
-                        if ve and ve.ghost and ve.ghost.Parent then
-                            ve.ghost.CFrame = (part.CFrame + ve.posDelta) * ve.rotOffset
-                        end
-                    end
-                end
+                local done = {}
+                for part in pairs(E.pasted) do E.stepFollow(part, done) end
             end)
         end
 
@@ -7244,16 +7375,224 @@ do
             ppI.copyOut.Text = ''; ppI.pasteIn.Text = ''
         end)
         ppI.pasteDelBtn.MouseButton1Click:Connect(function()
+            local n = E.clearPasted()
+            showToast('Deleted ' .. n .. ' pasted part(s)')
+        end)
+
+        -- Delete Pasted and config loads both start from a clean slate
+        function E.clearPasted()
             local n = 0
-            for part in pairs(E.pasted) do
-                pcall(function() part:Destroy() end)
+            for part, e in pairs(E.pasted) do
+                if not e.foreign then pcall(function() part:Destroy() end) end
                 E.pasted[part] = nil; n += 1
             end
             local root = ppGetRootModel()
             local folder = root and root:FindFirstChild('KonstantPasted')
             if folder then pcall(function() folder:Destroy() end) end
-            showToast('Deleted ' .. n .. ' pasted part(s)')
+            return n
+        end
+
+        function E.partsOf(inst)
+            if inst:IsA('BasePart') then return { inst } end
+            local list = {}
+            for _, d in ipairs(inst:GetDescendants()) do
+                if d:IsA('BasePart') and not d:GetAttribute('KPastePhys') then list[#list + 1] = d end
+            end
+            return list
+        end
+
+        -- explorer tags: ANCHOR? = waiting for a target, @Name = follows that part
+        ppI.refreshTags = function()
+            local pend = {}
+            for _, p in ipairs(ppI.anchorPending or {}) do pend[p] = true end
+            if ppI.anchorPendingInst then pend[ppI.anchorPendingInst] = true end
+            for _, n in ipairs(ppNodeList) do
+                local l, e = n.classLbl, E.pasted[n.instance]
+                if l then
+                    if pend[n.instance] then
+                        l.Text = 'ANCHOR?'; l.TextColor3 = ACCENT
+                    elseif e and e.userAnchor and e.anchor then
+                        l.Text = '@' .. e.anchor.Name; l.TextColor3 = Color3.fromRGB(80, 210, 110)
+                    else
+                        l.Text = n.instance.ClassName; l.TextColor3 = SUBTEXT
+                    end
+                end
+            end
+        end
+
+        ppI.setAnchorPending = function(inst)
+            ppI.anchorPending = inst and E.partsOf(inst) or nil
+            ppI.anchorPendingInst = inst
+            ppI.anchorLbl.Text = inst and ('Anchor: ' .. inst.Name) or 'Anchor: none'
+            ppI.anchorLbl.TextColor3 = inst and ACCENT or SUBTEXT
+            ppI.refreshTags()
+            if inst then
+                showToast('Select what "' .. inst.Name .. '" should follow, then click Anchor to Sel')
+            end
+        end
+
+        -- rigid follow: the part keeps its exact pose relative to the target, so it
+        -- leans and turns with it. Welded vehicle parts are skipped because moving
+        -- them would drag everything welded to them.
+        function E.anchorTo(list, target)
+            if not list or #list == 0 then showToast('Right-click a part > Anchor to object... first'); return end
+            if not target then showToast('Select the part to anchor to first'); return end
+            local n, skipped = 0, 0
+            for _, p in ipairs(list) do
+                local ok = p ~= target and p.Parent ~= nil and not p:IsA('Seat') and not p:IsA('VehicleSeat')
+                local a, guard = target, 0
+                while ok and E.pasted[a] and guard < 64 do
+                    a = E.pasted[a].anchor; guard += 1
+                    if a == p then ok = false end
+                end
+                if ok and not E.pasted[p] and #p:GetJoints() > 0 then ok = false end
+                if ok then
+                    local e = E.pasted[p]
+                    if not e then
+                        E.finalize(p, target, p.CFrame)
+                        e = E.pasted[p]; e.foreign = true
+                    end
+                    e.anchor = target; e.offset = target.CFrame:ToObjectSpace(p.CFrame)
+                    e.last = p.CFrame; e.lastAnchor = target.CFrame; e.userAnchor = true
+                    if e.weld then
+                        local ra = E.resolveAnchor(target)
+                        e.weld.Part0 = ra; e.weld.C0 = ra.CFrame:ToObjectSpace(p.CFrame); e.twinOff = e.weld.C0
+                    end
+                    n += 1
+                else
+                    skipped += 1
+                end
+            end
+            E.ensureFollow()
+            ppI.setAnchorPending(nil)
+            showToast('Anchored ' .. n .. ' to "' .. target.Name .. '"'
+                .. (skipped > 0 and (', skipped ' .. skipped .. ' (welded, seat or loop)') or ''))
+        end
+        ppI.anchorTo = function(target) E.anchorTo(ppI.anchorPending, target) end
+
+        ppI.anchorBtn.MouseButton1Click:Connect(function()
+            local list = ppI.anchorPending
+            if not list then showToast('Right-click a part > Anchor to object... first'); return end
+            local pend, target = {}, nil
+            for _, p in ipairs(list) do pend[p] = true end
+            for _, p in ipairs(ppSelectedBaseParts()) do
+                if not pend[p] then target = p; break end
+            end
+            ppI.anchorTo(target)
         end)
+        ppI.anchorXBtn.MouseButton1Click:Connect(function() ppI.setAnchorPending(nil) end)
+
+        -- a part's pose relative to what it's jointed to, Motor6D Transform excluded
+        function E.staticRel(p)
+            for _, j in ipairs(p:GetJoints()) do
+                if j:IsA('JointInstance') and j.Part0 and j.Part1 then
+                    if j.Part1 == p then return j.C0 * j.C1:Inverse() end
+                    if j.Part0 == p then return j.C1 * j.C0:Inverse() end
+                elseif j:IsA('WeldConstraint') and j.Part0 and j.Part1 then
+                    local o = (j.Part0 == p) and j.Part1 or j.Part0
+                    return o.CFrame:ToObjectSpace(p.CFrame)
+                end
+            end
+            return p.CFrame
+        end
+        -- configs store gizmo/Apply edits as one part-local CFrame from this baseline
+        ppI.markEdit = function(p, force)
+            if E.pasted[p] then return end
+            _G.ppBase = _G.ppBase or {}
+            if force or not _G.ppBase[p] then
+                _G.ppBase[p] = { rel = E.staticRel(p), size = p.Size }
+            end
+        end
+        function E.editOf(p)
+            local b = _G.ppBase and _G.ppBase[p]
+            if not b or not p.Parent then return nil end
+            local x = b.rel:Inverse() * E.staticRel(p)
+            local dSz = p.Size - b.size
+            return (not x:FuzzyEq(CFrame.identity, 1e-4)) and x or nil,
+                   (dSz.Magnitude > 1e-4) and dSz or nil
+        end
+
+        function E.atPath(root, path)
+            if type(path) ~= 'table' or #path == 0 then return nil end
+            local cur = root
+            for _, nm in ipairs(path) do cur = cur and cur:FindFirstChild(nm) end
+            return cur and cur:IsA('BasePart') and cur or nil
+        end
+
+        -- pasted parts (+ their anchors) and Visual Only ghosts for the config file
+        function E.saveCustom(model)
+            local out = { pasted = {}, visual = {} }
+            local ref = E.refFor(model)
+            local list, idx = {}, {}
+            for p in pairs(E.pasted) do
+                if p.Parent and p:IsDescendantOf(model) then list[#list + 1] = p; idx[p] = #list end
+            end
+            for i, p in ipairs(list) do
+                local e = E.pasted[p]
+                local r = e.foreign and { fp = E.pathIn(model, p) } or E.partRec(p, model, ref)
+                if idx[e.anchor] then r.ai = idx[e.anchor] else r.ap = E.pathIn(model, e.anchor) end
+                r.ao = E.enc(e.offset:GetComponents())
+                r.pc, r.pw, r.ua = e.collide, e.weight, e.userAnchor
+                out.pasted[i] = r
+            end
+            for p, v in pairs(ppVisualCache) do
+                if p.Parent and p:IsDescendantOf(model) then
+                    out.visual[#out.visual + 1] = {
+                        pi = idx[p], path = (not idx[p]) and E.pathIn(model, p) or nil,
+                        pd = v.posDelta, ro = v.rotOffset, so = v.sizeOverride,
+                    }
+                end
+            end
+            if #out.pasted == 0 and #out.visual == 0 then return nil end
+            return out
+        end
+
+        function E.loadCustom(model, c)
+            if type(c) ~= 'table' then return end
+            E.clearPasted()
+            if ppI.visClear then ppI.visClear() end
+            local folder = Instance.new('Folder'); folder.Name = 'KonstantPasted'; folder.Parent = model
+            local recs, made, placed = c.pasted or {}, {}, {}
+            local ref, seat = E.refFor(model), E.ownSeat()
+            for i, r in ipairs(recs) do
+                if r.fp then made[i] = E.atPath(model, r.fp) else made[i] = (E.buildPart(r)) end
+            end
+            -- anchors first: a part may follow another pasted part
+            local function place(i, depth)
+                if placed[i] or depth > 64 then return end
+                placed[i] = true
+                local r, p = recs[i], made[i]
+                if not p then return end
+                local anchor = r.ai and made[r.ai]
+                if anchor then place(r.ai, depth + 1) else anchor = E.atPath(model, r.ap) end
+                local off, cf = E.decCF(r.ao), nil
+                if anchor and off then
+                    cf = anchor.CFrame * off
+                else
+                    anchor = seat or model.PrimaryPart
+                    cf = ref * (E.decCF(r.cf) or CFrame.new())
+                end
+                if not anchor then return end
+                E.finalize(p, anchor, cf)
+                local e = E.pasted[p]
+                e.collide = r.pc == true; e.weight = tonumber(r.pw) or 0
+                e.userAnchor = r.ua; e.foreign = r.fp ~= nil
+                if not r.fp then p.Parent = folder end
+                E.applyPhys(p)
+            end
+            for i in ipairs(recs) do place(i, 0) end
+            E.ensureFollow()
+            for _, v in ipairs(c.visual or {}) do
+                local p = (v.pi and made[v.pi]) or E.atPath(model, v.path)
+                if p and ppI.visAdd then ppI.visAdd(p, v) end
+            end
+            pcall(ppBuildTree, true)
+        end
+
+        _G.KPP = {
+            placePart = ppI.placePart, markEdit = ppI.markEdit, editOf = E.editOf,
+            saveCustom = E.saveCustom, loadCustom = E.loadCustom,
+        }
     end
 
     -- initial render (empty selection)
