@@ -5033,10 +5033,10 @@ do
         _y = ppRow(28); ppRLbl('Weight', 12, _y + 3, 90)
         ppI.pasteWeightIn  = ppRInp('0', 108, _y, 58)
         ppI.pasteWeightBtn = ppRBtn('Set', 172, _y, 84)
-        _y = ppRow(44)
-        local hint = ppRLbl('Collide/Weight apply to selected pasted parts and to new pastes. Weight 0 = massless. Unmatched parts spawn mid-vehicle.',
+        _y = ppRow(58)
+        local hint = ppRLbl('Copy saves to a file, so Paste works on big builds even if the box cuts off. Collide/Weight apply to selected pasted parts + new pastes. Weight 0 = massless.',
             12, _y, 244, SUBTEXT)
-        hint.Size = UDim2.new(0, 244, 0, 42); hint.TextWrapped = true; hint.TextSize = 10
+        hint.Size = UDim2.new(0, 244, 0, 54); hint.TextWrapped = true; hint.TextSize = 10
     end
 
     -- mouse-select ignore list: name patterns + explicit parts + invisible
@@ -6698,58 +6698,84 @@ do
         ppRefreshInspector()
     end)
 
+    -- all helpers live on one table so this block adds a single local
+    -- register (Luau caps locals at 200 per function; the picker do-block
+    -- is already near the cap)
+    local E = {}
     do
-        local HS = game:GetService('HttpService')
-        local PREFIX = 'KPART1:'
-        local setClip = setclipboard or toclipboard or (syn and syn.write_clipboard)
-        local clipCache = nil   -- { key, clones } from the last copy this session
-        local pasted = {}       -- [part] = { anchor, offset, last, lastAnchor, collide, weight, twin, weld }
-        local pasteState = { collide = false, weight = 0 }
-        local followConn
-        local GENERIC = { Part = true, MeshPart = true, Union = true, WedgePart = true,
-                          Handle = true, UnionOperation = true }
+        E.HS = game:GetService('HttpService')
+        E.PREFIX = 'KPART1:'
+        E.setClip = setclipboard or toclipboard or (syn and syn.write_clipboard)
+        E.clipCache = nil   -- { key, clones } from the last copy this session
+        E.pasted = {}       -- [part] = { anchor, offset, last, lastAnchor, collide, weight, twin, weld }
+        E.pasteState = { collide = false, weight = 0 }
+        E.followConn = nil
+        E.GENERIC = { Part = true, MeshPart = true, Union = true, WedgePart = true,
+                      Handle = true, UnionOperation = true }
+
+        -- big builds blow past the TextBox paste cap and this executor has no
+        -- clipboard read, so Copy also drops the data in a file that Paste reads
+        E.PFILE = 'konstant/paste.txt'
+        if makefolder then pcall(makefolder, 'konstant') end
+        function E.saveFile(data)
+            if not writefile then return false end
+            return (pcall(writefile, E.PFILE, data))
+        end
+        function E.loadFile()
+            if not (readfile and isfile) then return nil end
+            local ok, is = pcall(isfile, E.PFILE)
+            if not ok or not is then return nil end
+            local ok2, s = pcall(readfile, E.PFILE)
+            return ok2 and s or nil
+        end
+        function E.parse(s)
+            local json = s and s:match('{.*}')
+            if not json then return nil end
+            local ok, data = pcall(function() return E.HS:JSONDecode(json) end)
+            if ok and type(data) == 'table' and type(data.parts) == 'table' then return data end
+        end
 
         -- %.9g round-trips float32 exactly, which is what Roblox stores
-        local function enc(...)
+        function E.enc(...)
             local t = { ... }
             for i, v in ipairs(t) do t[i] = string.format('%.9g', v) end
             return table.concat(t, ',')
         end
-        local function dec(s)
+        function E.dec(s)
             local t = {}
             for x in string.gmatch(s or '', '[^,]+') do t[#t + 1] = tonumber(x) end
             return t
         end
-        local function decV3(s)
-            local t = dec(s)
+        function E.decV3(s)
+            local t = E.dec(s)
             if #t < 3 then return nil end
             return Vector3.new(t[1], t[2], t[3])
         end
-        local function decC3(s)
-            local t = dec(s)
+        function E.decC3(s)
+            local t = E.dec(s)
             if #t < 3 then return nil end
             return Color3.new(t[1], t[2], t[3])
         end
-        local function decCF(s)
-            local t = dec(s)
+        function E.decCF(s)
+            local t = E.dec(s)
             if #t ~= 12 then return nil end
             return CFrame.new(table.unpack(t))
         end
-        local function get(o, k)
+        function E.get(o, k)
             local ok, v = pcall(function() return o[k] end)
             if ok then return v end
         end
-        local function set(o, k, v)
+        function E.set(o, k, v)
             if v ~= nil then pcall(function() o[k] = v end) end
         end
 
-        local function ownSeat()
+        function E.ownSeat()
             local char = plr.Character
             local hum = char and char:FindFirstChildWhichIsA('Humanoid')
             return hum and hum.SeatPart
         end
         -- vehicle a part belongs to: your own root if inside it, else its top model
-        local function rootOf(part)
+        function E.rootOf(part)
             local own = ppGetRootModel()
             if own and part:IsDescendantOf(own) then return own end
             local top = part
@@ -6757,9 +6783,9 @@ do
             return top:IsA('Model') and top or nil
         end
         -- reference frame for layout: seat, else pivot
-        local function refFor(root)
+        function E.refFor(root)
             local own = ppGetRootModel()
-            local seat = ownSeat()
+            local seat = E.ownSeat()
             if root and own == root and seat then return seat.CFrame end
             if root then
                 local vs = root:FindFirstChildWhichIsA('VehicleSeat', true)
@@ -6770,8 +6796,8 @@ do
             return seat and seat.CFrame or CFrame.new()
         end
         -- the part this one is rigidly attached to (pasted parts report their anchor)
-        local function partnerOf(p)
-            if pasted[p] then return pasted[p].anchor end
+        function E.partnerOf(p)
+            if E.pasted[p] then return E.pasted[p].anchor end
             for _, j in ipairs(p:GetJoints()) do
                 local a, b
                 if j:IsA('JointInstance') or j:IsA('WeldConstraint') then
@@ -6784,7 +6810,7 @@ do
                 if other and other ~= p and other:IsA('BasePart') then return other end
             end
         end
-        local function pathIn(root, inst)
+        function E.pathIn(root, inst)
             local names, cur = {}, inst
             while cur and cur ~= root do
                 table.insert(names, 1, cur.Name); cur = cur.Parent
@@ -6792,8 +6818,8 @@ do
             return cur == root and names or nil
         end
 
-        local function meshSizeOf(p)
-            local ms = get(p, 'MeshSize')
+        function E.meshSizeOf(p)
+            local ms = E.get(p, 'MeshSize')
             if typeof(ms) ~= 'Vector3' and gethiddenproperty then
                 local ok, v = pcall(gethiddenproperty, p, 'MeshSize')
                 if ok then ms = v end
@@ -6801,59 +6827,59 @@ do
             return typeof(ms) == 'Vector3' and ms or nil
         end
 
-        local function childRec(ch)
+        function E.childRec(ch)
             local r = { k = ch.ClassName }
             if ch:IsA('Decal') then
                 r.tx = ch.Texture; r.f = ch.Face.Name; r.t = ch.Transparency
-                r.col = enc(ch.Color3.R, ch.Color3.G, ch.Color3.B); r.z = ch.ZIndex
+                r.col = E.enc(ch.Color3.R, ch.Color3.G, ch.Color3.B); r.z = ch.ZIndex
                 if ch:IsA('Texture') then
-                    r.su = enc(ch.StudsPerTileU, ch.StudsPerTileV, ch.OffsetStudsU, ch.OffsetStudsV)
+                    r.su = E.enc(ch.StudsPerTileU, ch.StudsPerTileV, ch.OffsetStudsU, ch.OffsetStudsV)
                 end
             elseif ch:IsA('SpecialMesh') then
                 r.mt = ch.MeshType.Name; r.id = ch.MeshId; r.tx = ch.TextureId
-                r.sc = enc(ch.Scale.X, ch.Scale.Y, ch.Scale.Z)
-                r.of = enc(ch.Offset.X, ch.Offset.Y, ch.Offset.Z)
-                r.vc = enc(ch.VertexColor.X, ch.VertexColor.Y, ch.VertexColor.Z)
+                r.sc = E.enc(ch.Scale.X, ch.Scale.Y, ch.Scale.Z)
+                r.of = E.enc(ch.Offset.X, ch.Offset.Y, ch.Offset.Z)
+                r.vc = E.enc(ch.VertexColor.X, ch.VertexColor.Y, ch.VertexColor.Z)
             elseif ch:IsA('DataModelMesh') then
-                r.sc = enc(ch.Scale.X, ch.Scale.Y, ch.Scale.Z)
-                r.of = enc(ch.Offset.X, ch.Offset.Y, ch.Offset.Z)
+                r.sc = E.enc(ch.Scale.X, ch.Scale.Y, ch.Scale.Z)
+                r.of = E.enc(ch.Offset.X, ch.Offset.Y, ch.Offset.Z)
             elseif ch:IsA('Light') then
-                r.b = ch.Brightness; r.col = enc(ch.Color.R, ch.Color.G, ch.Color.B)
-                r.sh = ch.Shadows; r.e = ch.Enabled; r.rg = get(ch, 'Range')
-                r.a = get(ch, 'Angle'); local f = get(ch, 'Face'); r.f = f and f.Name
+                r.b = ch.Brightness; r.col = E.enc(ch.Color.R, ch.Color.G, ch.Color.B)
+                r.sh = ch.Shadows; r.e = ch.Enabled; r.rg = E.get(ch, 'Range')
+                r.a = E.get(ch, 'Angle'); local f = E.get(ch, 'Face'); r.f = f and f.Name
             else
                 return nil
             end
             return r
         end
 
-        local function partRec(p, root, ref)
+        function E.partRec(p, root, ref)
             local c = p.Color
             local r = {
                 c = p.ClassName, n = p.Name,
-                cf = enc(ref:ToObjectSpace(p.CFrame):GetComponents()),
-                s = enc(p.Size.X, p.Size.Y, p.Size.Z),
-                col = enc(c.R, c.G, c.B),
-                m = p.Material.Name, mv = get(p, 'MaterialVariant'),
+                cf = E.enc(ref:ToObjectSpace(p.CFrame):GetComponents()),
+                s = E.enc(p.Size.X, p.Size.Y, p.Size.Z),
+                col = E.enc(c.R, c.G, c.B),
+                m = p.Material.Name, mv = E.get(p, 'MaterialVariant'),
                 t = p.Transparency, r = p.Reflectance, cs = p.CastShadow,
             }
-            local partner = partnerOf(p)
-            local path = partner and root and pathIn(root, partner)
+            local partner = E.partnerOf(p)
+            local path = partner and root and E.pathIn(root, partner)
             if path then
                 r.rn = partner.Name; r.rp = path
-                r.rcf = enc(partner.CFrame:ToObjectSpace(p.CFrame):GetComponents())
+                r.rcf = E.enc(partner.CFrame:ToObjectSpace(p.CFrame):GetComponents())
             end
             if p:IsA('Part') then r.sh = p.Shape.Name end
             if p:IsA('MeshPart') then
-                r.mid = get(p, 'MeshId'); r.tid = get(p, 'TextureID')
-                r.ds = get(p, 'DoubleSided')
-                local ms = meshSizeOf(p)
-                if ms then r.ms = enc(ms.X, ms.Y, ms.Z) end
+                r.mid = E.get(p, 'MeshId'); r.tid = E.get(p, 'TextureID')
+                r.ds = E.get(p, 'DoubleSided')
+                local ms = E.meshSizeOf(p)
+                if ms then r.ms = E.enc(ms.X, ms.Y, ms.Z) end
             end
             if p:FindFirstChildOfClass('SurfaceAppearance') then r.sa = true end
             local kids = {}
             for _, ch in ipairs(p:GetChildren()) do
-                local cr = childRec(ch)
+                local cr = E.childRec(ch)
                 if cr then kids[#kids + 1] = cr end
             end
             if #kids > 0 then r.ch = kids end
@@ -6861,7 +6887,7 @@ do
         end
 
         -- session clone: keeps unions/SurfaceAppearance that data alone can't rebuild
-        local function cleanClone(p, bare)
+        function E.cleanClone(p, bare)
             local wasArch = p.Archivable
             pcall(function() p.Archivable = true end)
             local ok, cl = pcall(function() return p:Clone() end)
@@ -6878,24 +6904,27 @@ do
             return cl
         end
 
-        ppI.copyParts = function(list)
+        function E.copyParts(list)
             if #list == 0 then showToast('No parts selected'); return end
-            local root = rootOf(list[1])
-            local ref = refFor(root)
-            local key = HS:GenerateGUID(false)
+            local root = E.rootOf(list[1])
+            local ref = E.refFor(root)
+            local key = E.HS:GenerateGUID(false)
             local recs, clones = {}, {}
             for i, p in ipairs(list) do
-                recs[i] = partRec(p, root, ref)
-                clones[i] = cleanClone(p)
+                recs[i] = E.partRec(p, root, ref)
+                clones[i] = E.cleanClone(p)
             end
-            clipCache = { key = key, clones = clones }
-            local data = PREFIX .. HS:JSONEncode({ v = 1, k = key, parts = recs })
+            E.clipCache = { key = key, clones = clones }
+            local data = E.PREFIX .. E.HS:JSONEncode({ v = 1, k = key, parts = recs })
             ppI.copyOut.Text = data
-            local copied = setClip and pcall(setClip, data)
-            showToast('Copied ' .. #list .. ' part(s)' .. (copied and ' to clipboard' or ' (clipboard unavailable, use the box)'))
+            local copied = E.setClip and pcall(E.setClip, data)
+            local filed = E.saveFile(data)
+            local where = filed and ' (saved to file)' or (copied and ' to clipboard' or ' (use the box)')
+            showToast('Copied ' .. #list .. ' part(s)' .. where)
         end
+        ppI.copyParts = E.copyParts
 
-        local function newMeshPart(id)
+        function E.newMeshPart(id)
             local AS = game:GetService('AssetService')
             local ok, mp = false, nil
             if Content and Content.fromUri then
@@ -6907,45 +6936,45 @@ do
             if ok and typeof(mp) == 'Instance' then return mp end
         end
 
-        local function buildChild(r, parent)
+        function E.buildChild(r, parent)
             local ok, ch = pcall(Instance.new, r.k)
             if not ok then return end
             if r.k == 'Decal' or r.k == 'Texture' then
-                set(ch, 'Texture', r.tx); set(ch, 'Face', r.f and Enum.NormalId[r.f])
-                set(ch, 'Transparency', r.t); set(ch, 'Color3', decC3(r.col)); set(ch, 'ZIndex', r.z)
-                local su = dec(r.su)
+                E.set(ch, 'Texture', r.tx); E.set(ch, 'Face', r.f and Enum.NormalId[r.f])
+                E.set(ch, 'Transparency', r.t); E.set(ch, 'Color3', E.decC3(r.col)); E.set(ch, 'ZIndex', r.z)
+                local su = E.dec(r.su)
                 if #su == 4 then
-                    set(ch, 'StudsPerTileU', su[1]); set(ch, 'StudsPerTileV', su[2])
-                    set(ch, 'OffsetStudsU', su[3]); set(ch, 'OffsetStudsV', su[4])
+                    E.set(ch, 'StudsPerTileU', su[1]); E.set(ch, 'StudsPerTileV', su[2])
+                    E.set(ch, 'OffsetStudsU', su[3]); E.set(ch, 'OffsetStudsV', su[4])
                 end
             elseif r.k == 'SpecialMesh' then
-                set(ch, 'MeshType', r.mt and Enum.MeshType[r.mt]); set(ch, 'MeshId', r.id)
-                set(ch, 'TextureId', r.tx); set(ch, 'Scale', decV3(r.sc))
-                set(ch, 'Offset', decV3(r.of)); set(ch, 'VertexColor', decV3(r.vc))
+                E.set(ch, 'MeshType', r.mt and Enum.MeshType[r.mt]); E.set(ch, 'MeshId', r.id)
+                E.set(ch, 'TextureId', r.tx); E.set(ch, 'Scale', E.decV3(r.sc))
+                E.set(ch, 'Offset', E.decV3(r.of)); E.set(ch, 'VertexColor', E.decV3(r.vc))
             elseif ch:IsA('DataModelMesh') then
-                set(ch, 'Scale', decV3(r.sc)); set(ch, 'Offset', decV3(r.of))
+                E.set(ch, 'Scale', E.decV3(r.sc)); E.set(ch, 'Offset', E.decV3(r.of))
             elseif ch:IsA('Light') then
-                set(ch, 'Brightness', r.b); set(ch, 'Color', decC3(r.col)); set(ch, 'Shadows', r.sh)
-                set(ch, 'Enabled', r.e); set(ch, 'Range', r.rg); set(ch, 'Angle', r.a)
-                set(ch, 'Face', r.f and Enum.NormalId[r.f])
+                E.set(ch, 'Brightness', r.b); E.set(ch, 'Color', E.decC3(r.col)); E.set(ch, 'Shadows', r.sh)
+                E.set(ch, 'Enabled', r.e); E.set(ch, 'Range', r.rg); E.set(ch, 'Angle', r.a)
+                E.set(ch, 'Face', r.f and Enum.NormalId[r.f])
             end
             ch.Parent = parent
         end
 
         -- returns the part plus a note when something could not be rebuilt exactly
-        local function buildPart(r)
-            local size = decV3(r.s) or Vector3.one
+        function E.buildPart(r)
+            local size = E.decV3(r.s) or Vector3.one
             local p, note
             if r.c == 'MeshPart' and r.mid and r.mid ~= '' then
-                p = newMeshPart(r.mid)
+                p = E.newMeshPart(r.mid)
                 if p then
-                    set(p, 'TextureID', r.tid); set(p, 'DoubleSided', r.ds)
+                    E.set(p, 'TextureID', r.tid); E.set(p, 'DoubleSided', r.ds)
                 else
                     p = Instance.new('Part')
                     local sm = Instance.new('SpecialMesh')
                     sm.MeshType = Enum.MeshType.FileMesh
-                    set(sm, 'MeshId', r.mid); set(sm, 'TextureId', r.tid)
-                    local ms = decV3(r.ms)
+                    E.set(sm, 'MeshId', r.mid); E.set(sm, 'TextureId', r.tid)
+                    local ms = E.decV3(r.ms)
                     if ms and ms.X > 0 and ms.Y > 0 and ms.Z > 0 then
                         sm.Scale = size / ms
                         -- keep the Size gizmo scaling the mesh like a real MeshPart
@@ -6963,19 +6992,19 @@ do
                 p = Instance.new('Part'); note = r.c .. ' rebuilt as block'
             end
             if r.sa then note = 'SurfaceAppearance needs same-session paste' end
-            set(p, 'Shape', r.sh and Enum.PartType[r.sh])
+            E.set(p, 'Shape', r.sh and Enum.PartType[r.sh])
             p.Size = size
-            set(p, 'Color', decC3(r.col))
-            set(p, 'Material', r.m and Enum.Material[r.m])
-            if r.mv and r.mv ~= '' then set(p, 'MaterialVariant', r.mv) end
-            set(p, 'Transparency', r.t); set(p, 'Reflectance', r.r); set(p, 'CastShadow', r.cs)
+            E.set(p, 'Color', E.decC3(r.col))
+            E.set(p, 'Material', r.m and Enum.Material[r.m])
+            if r.mv and r.mv ~= '' then E.set(p, 'MaterialVariant', r.mv) end
+            E.set(p, 'Transparency', r.t); E.set(p, 'Reflectance', r.r); E.set(p, 'CastShadow', r.cs)
             p.Name = r.n or 'Pasted'
-            for _, cr in ipairs(r.ch or {}) do pcall(buildChild, cr, p) end
+            for _, cr in ipairs(r.ch or {}) do pcall(E.buildChild, cr, p) end
             return p, note
         end
 
         -- weight goes through density (Roblox clamps it to 0.0001..100)
-        local function applyWeight(tw, w)
+        function E.applyWeight(tw, w)
             if w <= 0 then tw.Massless = true; return 0 end
             tw.Massless = false
             local base = PhysicalProperties.new(tw.Material)
@@ -6990,8 +7019,8 @@ do
 
         -- the visible part stays an anchored follower (gizmo-safe); collision and
         -- mass live on an invisible twin welded to the anchor, synced from edits
-        local function applyPhys(part)
-            local e = pasted[part]
+        function E.applyPhys(part)
+            local e = E.pasted[part]
             if not e then return 0 end
             if not e.collide and e.weight <= 0 then
                 if e.twin then pcall(function() e.twin:Destroy() end) end
@@ -6999,12 +7028,12 @@ do
                 return 0
             end
             if not e.twin or not e.twin.Parent then
-                local tw = cleanClone(part, true)
+                local tw = E.cleanClone(part, true)
                 if not tw then return 0 end
                 tw.Name = part.Name .. '__Phys'
                 tw:SetAttribute('KPastePhys', true)
                 tw.Anchored = false; tw.Transparency = 1; tw.CastShadow = false
-                set(tw, 'CanQuery', false); set(tw, 'CanTouch', false)
+                E.set(tw, 'CanQuery', false); E.set(tw, 'CanTouch', false)
                 tw.CFrame = e.anchor.CFrame * e.offset
                 local w = Instance.new('Weld')
                 w.Part0 = e.anchor; w.Part1 = tw; w.C0 = e.offset; w.Parent = tw
@@ -7012,14 +7041,14 @@ do
                 e.twin, e.weld, e.twinOff, e.twinSize = tw, w, e.offset, part.Size
             end
             e.twin.CanCollide = e.collide
-            return applyWeight(e.twin, e.weight)
+            return E.applyWeight(e.twin, e.weight)
         end
 
         -- an outside CFrame write (gizmo, Apply, undo) is folded into the offset
-        local function ensureFollow()
-            if followConn then return end
-            followConn = RunService.RenderStepped:Connect(function()
-                for part, e in pairs(pasted) do
+        function E.ensureFollow()
+            if E.followConn then return end
+            E.followConn = RunService.RenderStepped:Connect(function()
+                for part, e in pairs(E.pasted) do
                     local a = e.anchor
                     if part.Parent and a and a.Parent then
                         if e.last and not part.CFrame:FuzzyEq(e.last, 1e-4) then
@@ -7031,7 +7060,7 @@ do
                             if e.twinOff ~= e.offset then e.weld.C0 = e.offset; e.twinOff = e.offset end
                             if e.twinSize ~= part.Size then
                                 e.twin.Size = part.Size; e.twinSize = part.Size
-                                applyWeight(e.twin, e.weight)
+                                E.applyWeight(e.twin, e.weight)
                             end
                         end
                         -- drive the Visual Only ghost here too so it never lags a frame
@@ -7044,22 +7073,22 @@ do
             end)
         end
 
-        local function resolveAnchor(a)
-            while a and pasted[a] and pasted[a].anchor do a = pasted[a].anchor end
+        function E.resolveAnchor(a)
+            while a and E.pasted[a] and E.pasted[a].anchor do a = E.pasted[a].anchor end
             return a
         end
 
-        local function finalize(p, anchor, worldCF)
+        function E.finalize(p, anchor, worldCF)
             p.Anchored = true; p.CanCollide = false; p.CanTouch = false
-            set(p, 'CanQuery', true); set(p, 'Massless', true)
+            E.set(p, 'CanQuery', true); E.set(p, 'Massless', true)
             p.CFrame = worldCF
-            pasted[p] = { anchor = anchor, offset = anchor.CFrame:ToObjectSpace(worldCF),
-                          last = p.CFrame, lastAnchor = anchor.CFrame,
-                          collide = pasteState.collide, weight = pasteState.weight }
+            E.pasted[p] = { anchor = anchor, offset = anchor.CFrame:ToObjectSpace(worldCF),
+                            last = p.CFrame, lastAnchor = anchor.CFrame,
+                            collide = E.pasteState.collide, weight = E.pasteState.weight }
         end
 
         -- same path first, then a unique non-generic name anywhere in the vehicle
-        local function findPartner(root, folder, r)
+        function E.findPartner(root, folder, r)
             if type(r.rp) == 'table' then
                 local cur = root
                 for _, nm in ipairs(r.rp) do
@@ -7067,7 +7096,7 @@ do
                 end
                 if cur and cur:IsA('BasePart') then return cur end
             end
-            if type(r.rn) ~= 'string' or GENERIC[r.rn] then return nil end
+            if type(r.rn) ~= 'string' or E.GENERIC[r.rn] then return nil end
             local hit
             for _, d in ipairs(root:GetDescendants()) do
                 if d.Name == r.rn and d:IsA('BasePart') and not d:IsDescendantOf(folder) then
@@ -7078,14 +7107,29 @@ do
             return hit
         end
 
-        ppI.pasteBtn.MouseButton1Click:Connect(function()
-            local raw = ppI.pasteIn.Text or ''
-            local json = raw:match('{.*}')
-            local ok, data = pcall(function() return HS:JSONDecode(json or '') end)
-            if not ok or type(data) ~= 'table' or type(data.parts) ~= 'table' then
-                showToast('Paste box has no valid part data'); return
+        function E.selectedPasted()
+            local out = {}
+            for _, p in ipairs(ppSelectedBaseParts()) do
+                if E.pasted[p] then out[#out + 1] = p end
             end
-            local root, seat = ppGetRootModel(), ownSeat()
+            return out
+        end
+
+        ppI.syncPasteUI = function(first)
+            local e = first and E.pasted[first]
+            ppI.setTog(ppI.pasteCollTog, e and e.collide or (not e and E.pasteState.collide))
+            ppI.pasteWeightIn.Text = tostring(e and e.weight or E.pasteState.weight)
+        end
+
+        ppI.pasteBtn.MouseButton1Click:Connect(function()
+            -- box first (small/shared data), then the file Copy wrote (big builds)
+            local srcTag = 'box'
+            local data = E.parse(ppI.pasteIn.Text or '')
+            if not data then data = E.parse(E.loadFile()); srcTag = 'file' end
+            if not data then
+                showToast('No valid data in box or file - Copy something first'); return
+            end
+            local root, seat = ppGetRootModel(), E.ownSeat()
             if not root or not seat then showToast('Sit on a vehicle first'); return end
 
             local folder = root:FindFirstChild('KonstantPasted')
@@ -7096,18 +7140,18 @@ do
             -- unmatched parts follow the first selected part (or the seat)
             local fallback = seat
             for _, p in ipairs(ppSelectedBaseParts()) do fallback = p; break end
-            fallback = resolveAnchor(fallback)
+            fallback = E.resolveAnchor(fallback)
 
             -- pass 1: partner matches place exactly; the rest keep their layout
             -- around the vehicle's bounding-box center
             local plan, loose, sum = {}, {}, Vector3.zero
             for i, r in ipairs(data.parts) do
-                local partner = findPartner(root, folder, r)
-                local rcf = decCF(r.rcf)
+                local partner = E.findPartner(root, folder, r)
+                local rcf = E.decCF(r.rcf)
                 if partner and rcf then
-                    plan[i] = { anchor = resolveAnchor(partner), cf = partner.CFrame * rcf }
+                    plan[i] = { anchor = E.resolveAnchor(partner), cf = partner.CFrame * rcf }
                 else
-                    local rel = decCF(r.cf) or CFrame.new()
+                    local rel = E.decCF(r.cf) or CFrame.new()
                     loose[#loose + 1] = { i = i, rel = rel }
                     sum += rel.Position
                 end
@@ -7122,24 +7166,24 @@ do
                 end
             end
 
-            local useCache = clipCache and clipCache.key == data.k
+            local useCache = E.clipCache and E.clipCache.key == data.k
             local made, notes, nLoose = {}, {}, 0
             for i, r in ipairs(data.parts) do
                 local pl = plan[i]
-                local src = useCache and clipCache.clones[i]
+                local src = useCache and E.clipCache.clones[i]
                 local p, note
-                if src then p = src:Clone() else p, note = buildPart(r) end
+                if src then p = src:Clone() else p, note = E.buildPart(r) end
                 if p and pl then
                     if note then notes[note] = true end
                     if pl.loose then nLoose += 1 end
-                    finalize(p, pl.anchor, pl.cf)
+                    E.finalize(p, pl.anchor, pl.cf)
                     p.Parent = folder
-                    applyPhys(p)
+                    E.applyPhys(p)
                     made[#made + 1] = p
                 end
             end
             if #made == 0 then showToast('Nothing pasted'); return end
-            ensureFollow()
+            E.ensureFollow()
 
             History.push('Paste ' .. #made .. ' part(s)',
                 function() for _, p in ipairs(made) do pcall(function() p.Parent = folder end) end end,
@@ -7159,6 +7203,7 @@ do
             if firstNode then ppExpandToAndFocus(firstNode) end
 
             local msg = 'Pasted ' .. #made .. (useCache and ' (exact clone)' or '')
+                .. (srcTag == 'file' and ' from file' or '')
             if nLoose > 0 then msg = msg .. ', ' .. nLoose .. ' unmatched -> vehicle center' end
             local extra = {}
             for k in pairs(notes) do extra[#extra + 1] = k end
@@ -7166,26 +7211,12 @@ do
             showToast(msg)
         end)
 
-        local function selectedPasted()
-            local out = {}
-            for _, p in ipairs(ppSelectedBaseParts()) do
-                if pasted[p] then out[#out + 1] = p end
-            end
-            return out
-        end
-
-        ppI.syncPasteUI = function(first)
-            local e = first and pasted[first]
-            ppI.setTog(ppI.pasteCollTog, e and e.collide or (not e and pasteState.collide))
-            ppI.pasteWeightIn.Text = tostring(e and e.weight or pasteState.weight)
-        end
-
         ppI.pasteCollTog.MouseButton1Click:Connect(function()
             local on = ppI.pasteCollTog.Text == 'OFF'
             ppI.setTog(ppI.pasteCollTog, on)
-            pasteState.collide = on
-            local list = selectedPasted()
-            for _, p in ipairs(list) do pasted[p].collide = on; applyPhys(p) end
+            E.pasteState.collide = on
+            local list = E.selectedPasted()
+            for _, p in ipairs(list) do E.pasted[p].collide = on; E.applyPhys(p) end
             showToast('Collide ' .. (on and 'ON' or 'OFF')
                 .. (#list > 0 and (' (' .. #list .. ' pasted)') or ' for new pastes'))
         end)
@@ -7193,10 +7224,10 @@ do
         ppI.pasteWeightBtn.MouseButton1Click:Connect(function()
             local w = math.max(0, tonumber(ppI.pasteWeightIn.Text) or 0)
             ppI.pasteWeightIn.Text = tostring(w)
-            pasteState.weight = w
-            local list = selectedPasted()
+            E.pasteState.weight = w
+            local list = E.selectedPasted()
             local total = 0
-            for _, p in ipairs(list) do pasted[p].weight = w; total += applyPhys(p) end
+            for _, p in ipairs(list) do E.pasted[p].weight = w; total += E.applyPhys(p) end
             if #list == 0 then
                 showToast('Weight ' .. w .. ' for new pastes')
             elseif w <= 0 then
@@ -7207,16 +7238,16 @@ do
         end)
 
         ppI.copyBtn.MouseButton1Click:Connect(function()
-            ppI.copyParts(ppSelectedBaseParts())
+            E.copyParts(ppSelectedBaseParts())
         end)
         ppI.clearCpBtn.MouseButton1Click:Connect(function()
             ppI.copyOut.Text = ''; ppI.pasteIn.Text = ''
         end)
         ppI.pasteDelBtn.MouseButton1Click:Connect(function()
             local n = 0
-            for part in pairs(pasted) do
+            for part in pairs(E.pasted) do
                 pcall(function() part:Destroy() end)
-                pasted[part] = nil; n += 1
+                E.pasted[part] = nil; n += 1
             end
             local root = ppGetRootModel()
             local folder = root and root:FindFirstChild('KonstantPasted')
